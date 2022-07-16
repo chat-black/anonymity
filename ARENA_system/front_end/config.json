@@ -1,0 +1,11 @@
+{
+  "comment": "Through this configuration file you can adjust some parameters of the web server",
+  "username": {
+    "comment": "The username used by the web server to access the database",
+    "value": "username"
+  },
+  "dbname": {
+    "comment": "The name of the database accessed by the web server",
+    "value": "tpch"
+  }
+}

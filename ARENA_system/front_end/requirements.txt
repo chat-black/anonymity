@@ -1,0 +1,10 @@
+Flask
+Flask-Cors
+gevent
+greenlet
+gunicorn
+Jinja2
+matplotlib
+numpy
+pandas
+psycopg2

@@ -1,0 +1,11 @@
+source /usr/local/gpdb/greenplum_path.sh
+
+
+gpstop -d /home/username/gpDatabase/gpmaster/gpsne-1/ << :
+Y
+:
+gpstart -d /home/username/gpDatabase/gpmaster/gpsne-1/ << :
+Y
+N
+:
+

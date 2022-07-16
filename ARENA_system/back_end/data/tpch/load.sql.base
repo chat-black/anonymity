@@ -1,0 +1,8 @@
+\copy nation from 'replace/nation.tbl' with delimiter as '|';
+\copy part from 'replace/part.tbl' with delimiter as '|';
+\copy region from 'replace/region.tbl' with delimiter as '|';
+\copy partsupp from 'replace/partsupp.tbl' with delimiter as '|';
+\copy customer from 'replace/customer.tbl' with delimiter as '|';
+\copy supplier from 'replace/supplier.tbl' with delimiter as '|';
+\copy lineitem from 'replace/lineitem.tbl' with delimiter as '|';
+\copy orders from 'replace/orders.tbl' with delimiter as '|';

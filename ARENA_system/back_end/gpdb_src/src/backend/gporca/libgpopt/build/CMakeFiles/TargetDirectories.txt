@@ -1,0 +1,3 @@
+/home/wang/software/GreenPlum/gpdb_src/src/backend/gporca/libgpopt/build/CMakeFiles/rebuild_cache.dir
+/home/wang/software/GreenPlum/gpdb_src/src/backend/gporca/libgpopt/build/CMakeFiles/gpopt.dir
+/home/wang/software/GreenPlum/gpdb_src/src/backend/gporca/libgpopt/build/CMakeFiles/edit_cache.dir

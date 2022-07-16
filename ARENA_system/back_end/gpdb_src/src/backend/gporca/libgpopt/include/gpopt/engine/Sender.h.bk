@@ -1,0 +1,144 @@
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <iostream>
+#include <string>
+#include <cstring>
+#include <cstdio>
+
+/*********************
+ * C++ 实现的客户端程序
+ * 
+ * 主要实现两个功能：1、向服务器发送生成的数据(DR) 2、向服务器请求下一条命令(DI)。
+ * 为了保证 B-AQS 和 I-AQS 的一致性，该客户端在发送完数据后也会持续地向服务器请求下一条指令
+ *    如果是 B-AQS ，该客户端会理解接收到关闭连接的命令
+ *    如果是 I-AQS，客户端会接收到以下几种类型的请求：关闭(与B-AQS 相同), 等待(当前服务器也不确定下一条请求是什么)，执行(与下一条请求相关的参数)
+ *      (这些信息的类型以及执行的相应操作由外部程序来决定，客户端只实现发送请求以及接收数据的功能)
+ * 
+ * 注意事项：如果距离上一次执行的时间超过 1小时,自动关闭
+ **********************/
+class Sender
+{
+    struct sockaddr_in remote_addr;
+    int client_sockfd;
+    bool init_flag;
+public:
+    // 初始化套接字，并与服务器建立连接
+    Sender(int port)
+    {
+        remote_addr.sin_family = AF_INET;
+        remote_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+        remote_addr.sin_port = htons(port);
+        client_sockfd = socket(PF_INET, SOCK_STREAM, 0);
+        
+        if (client_sockfd < 0)
+        {
+            std::cerr << "socket error\n";
+            init_flag = false;
+        }
+
+        if (connect(client_sockfd, (struct sockaddr*)&remote_addr, sizeof(struct sockaddr)) < 0)
+        {
+            std::cerr << "connect error\n";
+            init_flag = false;
+        }
+
+        init_flag = true;
+    }
+
+    // 判断是否与服务器成功建立连接
+    bool isStart()
+    {
+        return init_flag;
+    }
+
+
+    // 关闭客户端
+    bool Close()
+    {
+        return close(client_sockfd) == 0;
+    }
+
+    /*********************
+     * 生成需要发送的数据
+     * 要传入的两个参数为：
+     *      protocol_type: 协议的类型 (DR  DI)
+     *      message: 要发送的消息
+     *********************/
+    std::string generate_message(std::string protocol_type, std::string message)
+    {
+        std::string res = "ARENA:"+ protocol_type;
+
+        // 构造长度
+        std::string length = std::to_string(message.size());  // 消息的长度
+        char temp[] = "0000000000000000";
+        temp[16 - length.size()] = '\0';
+        length = temp + length;
+        temp[16 - length.size()] = 0;
+
+        return res + length + message;
+    }
+
+    /*********************
+     * 向 ARENA 发送最终的结果
+     *********************/
+     void send_result(std::string message)
+     {
+         message = generate_message("DR", message);
+         send(client_sockfd, message.c_str(), message.size(), 0);
+     }
+
+     /*****************************************
+      * 在正式发送结果之前，先告诉服务器这次结果的数量
+      *****************************************/
+      void send_result_num(int num)
+      {
+          std::string message = "NUM:" + std::to_string(num);
+          message = generate_message("DR", message);
+          send(client_sockfd, message.c_str(), message.size(), 0);
+      }
+
+
+     /*********************
+      * 向 ARENA 请求下一条命令
+      *********************/
+    void require_next()
+    {
+        std::string message = generate_message("DI", "");
+        send(client_sockfd, message.c_str(), message.size(), 0);
+    }
+
+    /*********************
+     * 响应的信息格式为：ARENA:RESULT:XX:xxxxxxxxxxxxxxxxmessage
+     *
+     * 从服务器处接收数据，返回的是一个 std::string 格式的信息，并且只返回 message 部分，不回
+     * 返回协议的类型
+     *********************/
+     std::string recv_data()
+     {
+         char temp[16];
+         temp[16] = '\0';
+         recv(client_sockfd, temp, 16, 0);  // 读取头部信息
+         recv(client_sockfd, temp, 16, 0);  // 读取长度信息
+
+         unsigned long long length = std::stoull(temp);
+         char * buff = new char[length + 1];  // 多分配一是为了存储最后的 '\0'
+         recv(client_sockfd, buff, length, 0);
+         buff[length] = '\0';
+         std::string res(buff);
+         
+         delete [] buff;
+         return res;
+     }
+
+     /*********************
+     * 用于测试的回声程序
+     *********************/
+     void echo(std::string message)
+     {
+         message = generate_message("TE", message);
+         send(client_sockfd, message.c_str(), message.size(), 0);
+     }
+};

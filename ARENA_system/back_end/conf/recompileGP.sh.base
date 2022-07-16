@@ -1,0 +1,32 @@
+source /usr/local/gpdb/greenplum_path.sh
+
+cd databaseSource
+
+echo "compile GreenPlum ..."
+sudo make
+if [ $? = '0' ] 
+then
+    echo "compile success"
+else
+    echo "compile fail"
+    exit 1
+fi
+
+echo "install GreenPlum ..."
+sudo make install
+if [ $? = '0' ] 
+then
+    echo "install success"
+else
+    echo "install fail"
+    exit 1
+fi
+
+gpstop -d /home/username/gpDatabase/gpmaster/gpsne-1/ << :
+Y
+:
+gpstart -d /home/username/gpDatabase/gpmaster/gpsne-1/ << :
+Y
+N
+:
+

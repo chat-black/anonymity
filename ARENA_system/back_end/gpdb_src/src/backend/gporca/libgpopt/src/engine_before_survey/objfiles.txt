@@ -1,0 +1,1 @@
+src/backend/gporca/libgpopt/src/engine//CEngine.o src/backend/gporca/libgpopt/src/engine//CEnumeratorConfig.o src/backend/gporca/libgpopt/src/engine//CPartialPlan.o src/backend/gporca/libgpopt/src/engine//CStatisticsConfig.o src/backend/gporca/libgpopt/src/engine//JSON.o src/backend/gporca/libgpopt/src/engine//JSONValue.o
