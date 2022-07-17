@@ -65,7 +65,7 @@ endif
 endif
 else # not PGXS
 vpath_build = no
-abs_top_srcdir = /home/arena1/temp/ARENA_system/back_end/gpdb_src
+abs_top_srcdir = /home/arena1/anonymity/ARENA_system/back_end/gpdb_src
 
 ifneq ($(vpath_build),yes)
 top_srcdir = $(top_builddir)
@@ -80,7 +80,7 @@ endif # not PGXS
 vpathsearch = `for f in $(addsuffix /$(1),$(subst :, ,. $(VPATH))); do test -r $$f && echo $$f && break; done`
 
 # Saved arguments from configure
-configure_args =  '--enable-debug' '--with-perl' '--with-python' '--with-libxml' 'CC=gcc' 'CFLAGS=-O0' 'CPPFLAGS=-O0 -std=c++11'
+configure_args =  '--with-perl' '--with-python' '--with-libxml' 'CC=gcc' 'CFLAGS=-O0' 'CPPFLAGS=-O0 -std=c++11'
 
 
 ##########################################################################
@@ -205,7 +205,7 @@ enable_rpath	= yes
 # NLS is not supported in Greenplum, see comment documenting
 # this in configure.in
 # enable_nls	= @enable_nls@
-enable_debug	= yes
+enable_debug	= no
 enable_dtrace	= no
 enable_coverage	= no
 enable_tap_tests	= no
@@ -270,12 +270,12 @@ endif # not PGXS
 CC = gcc
 GCC = yes
 SUN_STUDIO_CC = no
-CFLAGS = -Wall -Wmissing-prototypes -Wpointer-arith -g -ggdb -O0 -std=gnu99  
+CFLAGS = -Wall -Wmissing-prototypes -Wpointer-arith -O0 -std=gnu99  
 CFLAGS_VECTOR = 
 CFLAGS_SSE42 = -msse4.2
 
 CXX = g++
-CXXFLAGS =  -g3 -ggdb -Wall -Wpointer-arith -g -ggdb -O0
+CXXFLAGS =  -Wall -Wpointer-arith -O0
 
 # Kind-of compilers
 
@@ -375,8 +375,8 @@ BZIP2	= bzip2
 
 # Testing
 
-abs_top_builddir = /home/arena1/temp/ARENA_system/back_end/gpdb_src
-abs_top_srcdir = /home/arena1/temp/ARENA_system/back_end/gpdb_src
+abs_top_builddir = /home/arena1/anonymity/ARENA_system/back_end/gpdb_src
+abs_top_srcdir = /home/arena1/anonymity/ARENA_system/back_end/gpdb_src
 
 check:
 

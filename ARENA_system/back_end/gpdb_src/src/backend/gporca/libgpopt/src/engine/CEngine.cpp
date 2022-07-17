@@ -8,11 +8,7 @@
 //	@doc:
 //		Implementation of optimization engine
 //---------------------------------------------------------------------------
-//************************ARENA**************************/
-//	1、当前 ARENA 找到 k 个结果的方法是优化过的方法
-//	2、后缀树计算与自己的距离采用优化过的方法
-//	3、当前 CEngine.cpp 用于进行时间的实验
-//************************ARENA**************************/
+
 #include "gpopt/engine/CEngine.h"
 #include "gpopt/engine/Edge.h"
 #include "gpopt/engine/Sender.h"
@@ -96,12 +92,23 @@
 #include <set>
 #include <iomanip>
 
+#define GPOPT_SAMPLING_MAX_ITERS 30
+#define GPOPT_JOBS_CAP 5000	 // maximum number of initial optimization jobs
+#define GPOPT_JOBS_PER_GROUP \
+	20	// estimated number of needed optimization jobs per memo group
+
+// memory consumption unit in bytes -- currently MB
+#define GPOPT_MEM_UNIT (1024 * 1024)
+#define GPOPT_MEM_UNIT_NAME "MB"
+
+using namespace gpopt;
+
 
 //************************ARENA**************************/
 #define ARENA_DEBUG
 #define ARENA_PHYSICAL
 
-// 对序列化后的树进行排序，并返回排序后的新树
+// Sort the serialized tree
 std::string ARENASortSTree(const std::string & s)
 {
 	std::string res;
@@ -145,11 +152,11 @@ std::string ARENASortSTree(const std::string & s)
 }
 
 
-// MinDist 结构 用于 FindK 函数中进行剪枝
+// struct MinDist is used for B-TIPS-HEAP
 struct MinDist {
-	int index;  // plan 在数组中的索引
-	std::size_t distNum;  // 当前的最小距离是找出 distNum 个结果后的值，当只有 QEP 时，distNum 是0
-	double dist;  // 当前的最小距离
+	int index;  // plan index
+	std::size_t distNum;
+	double dist;  // current minimum distance
 
 	MinDist() {
 		index = 0;
@@ -167,8 +174,7 @@ struct MinDist {
 };
 
 
-// 否则将 CTreeNode 中统计的 ARENA_groupTreePlus 的信息转变为
-// 记录所有子树的 hash table，用于之后进一步计算两棵树之间的结构距离
+// struct gtTree is used for record the information of a GroupTree
 struct gtTree
 {
 	struct gtSingleChar
@@ -181,7 +187,7 @@ struct gtTree
 
     typedef std::unordered_map<std::string, std::vector<int>>::iterator pairIter;
 
-    pairIter inIter;  // 指向 CTreeNode 中某个特定元素的指针
+    pairIter inIter;  // pointer to a specific element in the CTreeNode
     std::unordered_map<std::string, int> inSubtreeInfo;
 	double inSelfKernel;
 
@@ -191,7 +197,7 @@ struct gtTree
 		inSelfKernel = 0.0;
     }
 
-    // 初始化，生成某棵 GroupTree 的 hash 表
+    // initialize, genearte the hash table of a GroupTree, used to calculated the structure difference
     void init()
     {
         std::vector<gtSingleChar> stack;
@@ -200,7 +206,7 @@ struct gtTree
         {
             switch(c)
             {
-                case '[':  // 直接加入栈中
+                case '[':
                     stack.emplace_back(gtSingleChar(c));
                     break;
                 case ']':
@@ -209,9 +215,7 @@ struct gtTree
                     tempStr += ']';
                     stack.pop_back();
 
-                    // 记录该子串
                     inSubtreeInfo[tempStr]++;
-                    // 将该子串添加到前一个字符的孩子上
                     if(!stack.empty())
                     {
                         stack.back().inChild += tempStr;
@@ -220,11 +224,10 @@ struct gtTree
             }
         }
 
-		// 计算与自己的树核
 		std::unordered_map<std::string, int> * small;
 		small = &inSubtreeInfo;
 
-		// 找到两棵树的公共子树，并计算相应的乘积
+		// find the common subtrees
 		for (auto iter=small->begin(); iter != small->end() ; iter++){
 			inSelfKernel += iter->second * iter->second;
 		}
@@ -242,6 +245,7 @@ struct gtTree
 };
 
 
+// Used to calculate TreeEditDistance
 struct TreeEdit
 {
 
@@ -254,10 +258,9 @@ struct TreeEdit
     enum matchT { DELA, DELB, MATCH };
     struct resultT
     {
-        // 构造函数
         resultT(matchT match = MATCH, int cost = 10000) : match(match), cost(cost), map() {}
 
-        matchT match;  // 匹配的形式，删除A的节点或者删除B的节点或者是 MATCH
+        matchT match;
         int cost;
         std::vector<mapT> map;
     };
@@ -266,7 +269,7 @@ struct TreeEdit
         int id;
         std::wstring type;
         int leaf;
-        bool key;  // 这个是什么？
+        bool key;
         int size;
     };
 
@@ -278,7 +281,6 @@ struct TreeEdit
     typedef std::vector<bool> VB;
     typedef std::vector<nodeT> VN;
 
-    // 类中的全局变量
     VVR dp, dp2;
     VN postA, postB;
 
@@ -293,22 +295,12 @@ struct TreeEdit
         return static_cast<int>(root->AsObject().at(L"id")->AsNumber() + 1);
     }
 
-    // leaf: 叶子节点的数量
-    // key:
-    // size:
     nodeT makeNode(JSONValue* node, int leaf, bool key, int size)
     {
         nodeT n;
-        // 设置 type
         n.type = node->AsObject().at(L"type")->AsString();
-
-        // 设置 id
         n.id = static_cast<int>(node->AsObject().at(L"id")->AsNumber());
-	
-        // 设置 id
         n.id = static_cast<int>(node->AsObject().at(L"id")->AsNumber());
-
-        // 设置 leaf, key 和 size
         n.leaf = leaf;
         n.key = key;
         n.size = size;
@@ -318,21 +310,20 @@ struct TreeEdit
 
     int postorder(JSONValue* node, VN& post, bool isKey)
     {
-        const JSONArray& children = node->AsObject().at(L"children")->AsArray();  // 取得所有的子节点
+        const JSONArray& children = node->AsObject().at(L"children")->AsArray();
         int ans = -1;
         int size = 1;
-        for (std::size_t i = 0; i < children.size(); i++)  // 遍历每个子节点
+        for (std::size_t i = 0; i < children.size(); i++)
         {
-            int tmp = postorder(children[i], post, i > 0);  // 对子节点进行后序遍历 (i>0 才是key)
-            size += post[post.size() - 1].size;  // 最后一个节点的 size，nodeT 的 size
+            int tmp = postorder(children[i], post, i > 0);
+            size += post[post.size() - 1].size;
             if (ans == -1)
                 ans = tmp;
         }
         if (ans == -1)
-            ans = post.size();  // vector 的 size
+            ans = post.size();
 
-          // ans 代表叶子节点的数量
-        post.push_back(makeNode(node, ans, isKey, size));  // node (int)leaf (bool)key (int)size
+        post.push_back(makeNode(node, ans, isKey, size));
         return ans;
     }
 
@@ -344,7 +335,7 @@ struct TreeEdit
 	    void matchTree(const VN& A, const VN& B, int a, int b)
     {
         dp2[0][0].cost = 0;
-        int leafA = A[a].leaf, leafB = B[b].leaf;  // A节点的叶子数量
+        int leafA = A[a].leaf, leafB = B[b].leaf;
         for (int i = leafA; i <= a; i++)
         {
             dp2[i - leafA + 1][0].cost = dp2[i - leafA][0].cost + 1;
@@ -422,7 +413,7 @@ struct TreeEdit
         }
     }
 
-	 // 将 dp, dp2, postA, postB 等重置
+	 // reset dp, dp2, postA, postB
     void reset()
     {
         VN().swap(postA);
@@ -431,8 +422,6 @@ struct TreeEdit
         VVR().swap(dp2);
     }
 
-	// 代码的执行
-	// a_size 代表树 A 的节点数量，b_size 代表树B的节点数量，用于归一化
     double operator()(std::string& json_a, std::string& json_b, int a_size, int b_size)
     {
         JSONValue* A = readJSON(json_a);
@@ -440,13 +429,12 @@ struct TreeEdit
         JSONValue* B = readJSON(json_b);
         JSONValue* rootB = B->AsObject().at(L"root");
 
-        // 取得两个 root 的大小
         int na = getSize(rootA), nb = getSize(rootB);
 
-        dp = VVR(na, VR(nb));  // 二维 vector，矩阵
+        dp = VVR(na, VR(nb));
         dp2 = VVR(na + 1, VR(nb + 1));
 
-        postorder(rootA, postA, true);  // 后序遍历
+        postorder(rootA, postA, true);
         postorder(rootB, postB, true);
 
         for (int i = 0; i < na; i++)
@@ -463,97 +451,61 @@ struct TreeEdit
 
         int ans = dp[na - 1][nb - 1].cost;
 
-        // map<int, int> matching;
-        // populateMatching(matching, dp[na - 1][nb - 1]);
-        // cout << ans << " " << matching.size() << endl;
 		double res = (2.0 * ans) / (a_size + b_size + ans);
         return res;
     }
 };
 
-//***********************DEBUG***************************/
-std::ofstream fout_dist;  // 用于统计每个计划与最有计划之间的各种距离
 
-//************************ARENA**************************/
+// These three functions are used in the ARENA system
+void DealWithPlan();  // TIPS algorithm
+void FindKRandom();  // Random
+void FindKCost();  // Cost
 
+// The following functions are used for the experiments in Section 7.2
+void ARENATimeExp3();  // Exp1 in Section 7.2, TIPS algorithm
+void ARENATimeExp3Random();  // Exp1 in Section 7.2, Random
+void ARENATimeExp3Cost();  // Exp1 in Section 7.2, Cost
 
-#define GPOPT_SAMPLING_MAX_ITERS 30
-#define GPOPT_JOBS_CAP 5000	 // maximum number of initial optimization jobs
-#define GPOPT_JOBS_PER_GROUP \
-	20	// estimated number of needed optimization jobs per memo group
+void ARENATimeExp4();  // Exp2 in Section 7.2, suffix Tree
+void ARENATimeExp4Hash();  // Exp2 in Section 7.2, Hash Table
+void ARENATimeExp4Old();  // Exp2 in Section 7.2, suffix Tree old
 
-// memory consumption unit in bytes -- currently MB
-#define GPOPT_MEM_UNIT (1024 * 1024)
-#define GPOPT_MEM_UNIT_NAME "MB"
+void ARENAGTExp();  // Exp 4 in Section 7.2
 
-using namespace gpopt;
-void DealWithPlan();
-void FindKRandom();
-void FindKCost();
-void ARENATimeExp1();  // 测试不同结构计算方法对性能的影响 （这个实验暂时没用）
-void ARENATimeExp2();  // 测试添加剪枝条件时对性能的影响 （这个实验暂时也没用）
-void ARENATimeExp3();  // 测试不同选择方法的效果和效率对比
-void ARENATimeExp3Random();  // 测试不同选择方法的效果和效率对比
-void ARENATimeExp3Cost();  // 测试不同选择方法的效果和效率对比
-void ARENATimeExp4();  // 测试使用优化过的后缀树构造方法所需的时间
-void ARENATimeExp4Hash();  // 测试使用 Hash Table 计算树核时花费的时间
-void ARENATimeExp4Old();  // 测试使用原始的后缀树构造方法所需的时间
-void ARENAGTExp();  // 测试使用 Group Tree 进行过滤的效果
-void ARENAOutputExp(std::size_t , std::ofstream &);  // 用于将结果输出到文件中
-void ARENAAosExp();  // 测试 AOS 策略的实验
-void ARENAFindTargetType();  // 用于寻找特定类型的 plan
-#define ARENA_GTEXP
+void ARENAAosExp();  // Exp 5 in Section 7.2
+
+// assistant function
+void ARENAOutputExp(std::size_t , std::ofstream &);
 void readConfig(char mode='B');
-void ARENAGetIndexInfo(CExpression * expression, IOstream &os);
 
-
-// // 用于生成更加随机的 plan id 而构造的类
-// struct RandomId
-// {
-// 	std::default_random_engine e;
-// 	std::
-// 	bool init_flag;
-// 
-// 	void init()
-// }
+#define ARENA_GTEXP
 
 
 ///**************************************************/
-/// 一些会用到的全局变量
+/// Some global variables that will be used
 ///**************************************************/
+double gSWeight = 0.33;  // the weight of structure difference
+double gCWeight = 0.33;  
+double gCostWeight = 0.33;  
+double gLambda = 0.5;  // trade-off between difference and relevance
+char gMode = 'B';  // B-TIPS or I-TIPS
+std::size_t gARENAK = 5;  // display 5 informative plans defaultly
+bool gIsGTFilter = false;  // Whether to use the GFP filtering algorithm
+int gGTNumThreshold = 50000;  // GFP threshold
+double gGTFilterThreshold = 0.5;  // the plan whose difference is larger than this value will be filtered out
+ULLONG gSampleThreshold = 10;  // LAPS threshold
+bool gisSample = false;  // whether to use the LAPS 
+std::size_t gAosStart = 0;
+ULLONG gJoin = 0; // the number of join in SQL
+bool gTEDFlag = false;  // whether to use TreeEditDistance
 
-double max_cost = 1.0;  // 所有 plan 中最大的 cost 值
-std::string gConf;  // 暂存 config 信息的字符串
-std::string gResFile;  // 最终结果的文件名
-double gSWeight = 0.33;  // 结构的差距所占的比重
-double gCWeight = 0.33;  // 内容的差异所占的比重
-double gCostWeight = 0.33;  // cost 的差异所占的比重
-double gLambda = 0.5;  // diff 所占的比重
-char gMode = 'B';  // ARENA 以哪种模式运行
-std::size_t gARENAK = 5;  // 默认选出 5 个 alternative plans
-Sender* web_client = nullptr;  // 与 web 服务器进行通信的客户端
-bool gIsGTFilter = false;  // 是否使用 Group Tree 对 plan 进行过滤，默认如果 plan 的数量大于 10 万就进行过滤，不能有用户来决定，因为用户并不知道共有多少个 plan
-int gGTNumThreshold = 50000;
-double gGTFilterThreshold = 0.5;  // 与 QEP 的结构差异大于该阈值将会被过滤掉
-ULLONG gSampleThreshold = 10;
-bool gisSample = false;
-std::size_t gAosStart = 0;  // 记录从哪个索引开始就是 Aos 策略添加的 plan ，只在实验中有用
-int gMethod = 0;  // 采用哪种方法选择 plan  0->正常的方法 1->cost_based 2->random
-ULLONG gJoin = 0; // the number of join
-bool gTEDFlag = false;  // 指示是否使用 tree edit distance
-
-bool bow_flag = false;  // 指示是否使用 bag of word 模型计算内容的相似度，默认不使用
-char edgePrefix[2]={'[', ']'};  // 从节点指向某条边的前缀，只有 '[' 和 ']' 两种可能
-
-
-//**************************************************/
-// 全局变量，用于记录每个 plan 当前的最近距离
-//      key: plan 在 vector 中的 index
-//      value: min_dist
-// 
-// new_add：新加入的 plan 的 id
-//**************************************************/
-// std::unordered_map<int, double> dist_record;
+// auxiliary variable
+double max_cost = 1.0;
+std::string gConf;
+std::string gResFile;
+Sender* web_client = nullptr;
+char edgePrefix[2]={'[', ']'};
 int new_add = 0;
 std::unordered_set<ULLONG> find_index;
 int counter = 0;
@@ -562,7 +514,7 @@ int counter = 0;
 
 ///**************************************************/
 ///
-/// 编辑距离相关的代码
+/// function related to edit distance
 ///
 ///**************************************************/
 inline int min(int x, int y) { return x <= y ? x : y; }
@@ -572,16 +524,12 @@ double editDist(std::vector<std::string*> word1, std::vector<std::string*> word2
 	std::size_t n = word1.size();
 	std::size_t m = word2.size();
 
-	// 有一个字符串为空串
 	if (n * m == 0)
 	{
 		return 1.0;
 	}
 
-	// DP 数组
 	int D[100][100];
-
-	// 边界状态初始化
 	for (std::size_t i = 0; i < n + 1; i++) {
 		D[i][0] = i;
 	}
@@ -589,7 +537,6 @@ double editDist(std::vector<std::string*> word1, std::vector<std::string*> word2
 		D[0][j] = j;
 	}
 
-	// 计算所有 DP 值
 	for (std::size_t i = 1; i < n + 1; i++) {
 		for (std::size_t j = 1; j < m + 1; j++) {
 			int left = D[i - 1][j] + 1;
@@ -604,22 +551,18 @@ double editDist(std::vector<std::string*> word1, std::vector<std::string*> word2
 }
 
 
-// 普通版本的编辑距离，不进行归一化
+// Edit distance without normalization
 int editDistG(std::vector<std::string*> word1, std::vector<std::string*> word2)
 {
 	std::size_t n = word1.size();
 	std::size_t m = word2.size();
 
-	// 有一个字符串为空串
 	if (n * m == 0)
 	{
 		return 1.0;
 	}
 
-	// DP 数组
 	int D[100][100];
-
-	// 边界状态初始化
 	for (std::size_t i = 0; i < n + 1; i++) {
 		D[i][0] = i;
 	}
@@ -627,7 +570,6 @@ int editDistG(std::vector<std::string*> word1, std::vector<std::string*> word2)
 		D[0][j] = j;
 	}
 
-	// 计算所有 DP 值
 	for (std::size_t i = 1; i < n + 1; i++) {
 		for (std::size_t j = 1; j < m + 1; j++) {
 			int left = D[i - 1][j] + 1;
@@ -1372,15 +1314,14 @@ void carryPhase(suffixTree& tree, int lastIndex)
 
 ///**************************************************/
 ///
-/// plan树相关的代码
+/// Code about Plan Tree
 /// 
 ///**************************************************/
-
 struct NodeData
 {
 	std::string name;
-	std::string tag;  // 该节点的类型是什么，当前记录的类型包括（TABLE 表, SCAN 扫描操作符, JOIN 连接操作符）
-	std::string info;  // 该节点的额外信息，当前只有 index 类型才会展示额外信息，包括（index name，过滤条件）
+	std::string tag;  // node type
+	std::string info;  // other information of node
 	double cost;
 	NodeData(double cost_in = 0.0, std::string name_in = "", std::string tag_in = "", std::string info_in = "")
 	{
@@ -1399,7 +1340,6 @@ struct PlanTreeNode
 	NodeData data;
 	std::vector<PlanTreeNode*> child;
 
-	// 构造函数
 	PlanTreeNode(NodeData data_in)
 	{
 		data = data_in;
@@ -1412,13 +1352,12 @@ struct PlanTreeNode
 	}
 
 
-	// 在该节点添加一个孩子
+	// add a child node
 	void push_back(PlanTreeNode* c)
 	{
 		child.push_back(c);
 	}
 
-	// 去除最后一个孩子节点
 	void pop_back()
 	{
 		if (child.size() > 0)
@@ -1427,13 +1366,11 @@ struct PlanTreeNode
 		}
 	}
 
-	// 取得孩子节点的数量
 	std::size_t size() const
 	{
 		return child.size();
 	}
 
-	// 取得某一个孩子节点
 	PlanTreeNode* operator[](std::size_t i)
 	{
 		return i < size() ? child[i] : NULL;
@@ -1455,21 +1392,20 @@ struct PlanTreeNode
 		return out;
 	}
 
-	// 取得字符串表示
-	std::string get_string()  // 这个性能还能优化
+	// serialize the node
+	std::string get_string()
 	{
-		if (!child.size())  // size == 0
+		if (!child.size())
 			return std::string("[]");
 		else
 		{
-			// 取得所有孩子节点的字符串表示
 			std::vector<std::string> child_string;
 			child_string.reserve(child.size());
 			for (std::size_t i = 0; i < child.size(); ++i)
 			{
 				child_string.push_back(child[i]->get_string());
 			}
-			// 排序
+			
 			std::sort(child_string.begin(), child_string.end());
 			std::string res("[");
 			for (auto& s : child_string)
@@ -1488,7 +1424,7 @@ struct PlanTreeNode
 		res["tag"] = data.tag;
 		res["info"] = data.info;
 		res["child_flag"] = child.size() > 0;
-		if (child.size())  // 存在孩子节点
+		if (child.size())
 		{
 			res["child"] = json::array();
 			for (std::size_t i = 0; i < child.size(); ++i)
@@ -1497,14 +1433,12 @@ struct PlanTreeNode
 		return res;
 	}
 
-	// 生成用于计算 tree edit distance 的字符串
-	// target: 用于存储相应字符串的变量
-	// current_id: 当前节点的 id
+	// generate the string used for tree edit distance
 	void ted_json(std::string & target, int * current_id)
 	{
 		target += "{\"id\":" + std::to_string(*current_id) + ",\"type\":\"" + data.name + "\", \"children\":[";
 		(*current_id)++;
-		for (std::size_t i=0;i<child.size();++i)  // 遍历每个孩子节点
+		for (std::size_t i=0;i<child.size();++i)
 		{
 			child[i]->ted_json(target, current_id);
 			target += ", ";
@@ -1528,11 +1462,7 @@ struct PlanTreeNode
 
 
 //--------------------------------------------------
-// @function:
-//		serialize
-//
-// @doc:
-// 		对树进行序列化，并返回序列化之后的字符串。当前采用的方法是先序遍历序列化
+//	serialize a tree structure
 //--------------------------------------------------
 std::string serialize(PlanTreeNode * root){
 	if(root == nullptr){
@@ -1553,26 +1483,22 @@ struct PlanTree
 {
 	using json = nlohmann::json;
 
-	// 与 best_plan 的结构和cost的偏离程度。也可以理解为某个 plan 的价值。当前我们认为 cost 差异越大，结构和内容差异越小，价值越大
 	double offset;
 
 	PlanTreeNode *root;
-	std::string str_expression;  // 用于计算后缀树
+	std::string str_expression;
 	bool init_flag;
 	suffixTreeContext context;
-	std::vector<std::string*> str_of_node;  // 节点内容构成的字符串，用于度量内容之间的差异
-	// 这两个属性均与 treeEditDist 有关，使用其它方法时不需考虑
+	std::vector<std::string*> str_of_node;
+	
 	std::string json_str;
 	int node_num;
 	double cost_log;
-	double s_dist_best, c_dist_best, cost_dist_best;  // 与 best_plan 之间的各种距离
+	double s_dist_best, c_dist_best, cost_dist_best;
 
 	suffixTree testTree;
-	std::unordered_map<std::string, int> subTree;  // 记录所有的子树以及各个子树出现的个数，用于计算结构距离
+	std::unordered_map<std::string, int> subTree;
 
-
-	// 返回 expression 中的 name
-	// 如果 name 以 CPhysical 开头，将其删除
 	const char* get_name(T* exp)
 	{
 		if (NULL != exp)
@@ -1581,7 +1507,7 @@ struct PlanTree
 			const char * name_start = exp->Pop()->SzId();
 			const char * base_str = "CPhysical";
 
-			if(strlen(name_start) > 9)  // 确保 字符串一定比目标字符串长
+			if(strlen(name_start) > 9)
 			{
 				for(int i=0;i<9;++i)
 				{
@@ -1611,7 +1537,7 @@ struct PlanTree
 			return 0.0;
 	}
 
-	// 返回当前树的总 cost ，即根节点的 cost
+	
 	double get_cost(){
 		return root->data.cost;
 	}
@@ -1622,9 +1548,9 @@ struct PlanTree
 		{
 			PlanTreeNode* cur = NULL;
 
-			// 检查这个操作是否为 CPhysical 操作，因为这个操作，所以 PlanTree 不再适用于其它类型
+			
 #ifdef ARENA_PHYSICAL
-			if (child_expression->Pop()->FPhysical())  // CExpression* -> Coperator* -> bool
+			if (child_expression->Pop()->FPhysical())  
 			{
 #endif
 				const char * expression_name = get_name(child_expression);
@@ -1632,44 +1558,9 @@ struct PlanTree
 				parent.push_back(cur);
 				int name_len = strlen(expression_name);
 
-				// 检查是否是 Index 操作，如果是，输出详细信息
-				if (name_len > 5 && !strncmp(expression_name, "Index", 5)){  // IndexScan
-#ifdef ARENA_DEBUG
-					// std::ofstream fout_index("/tmp/Index");
-					// fout_index << "存在 index 节点\n";
-#endif
-					gpos::ARENAIOstream stream;
-					// 这一步用于输出索引名
-					if (strncmp(expression_name, "IndexS", 6) == 0){
-						dynamic_cast<CPhysicalIndexScan*>(child_expression->Pop())->ARENAGetInfo(stream);
-					}else if (strncmp(expression_name, "IndexO", 6) == 0){
-						dynamic_cast<CPhysicalIndexOnlyScan*>(child_expression->Pop())->ARENAGetInfo(stream);
-					}
-					stream << '\n';
-
-					// 这一步用于取得索引的过滤条件
-					if (child_expression->Arity() == 1){  // 恰好只有一个孩子
-						ARENAGetIndexInfo((*child_expression)[0], stream);
-					} else {  // 有多个孩子或者没有孩子
-						stream << "子表达式的个数与预期不符，子表达式的个数为：" << child_expression->Arity();
-					}
-					cur->data.info = stream.ss.str();
-
-#ifdef ARENA_DEBUG
-					// if (fout_index.is_open()){
-					// 	fout_index << expression_name << '\n';
-					// 	fout_index << stream.ss.str();
-					// 	fout_index.close();
-					// }
-#endif
-				}
-
-				// 需要检查名字是否是 Scan 类型，如果是，需要获得 relation 的名字
-
-				// 字符串长度大于4，并且最后四个字母是 Scan，需要取得表名
 				if (name_len > 4 && !strcmp(expression_name + name_len - 4, "Scan"))
 				{
-					cur->data.tag = "SCAN";  // 节点的标签为: 扫描操作符
+					cur->data.tag = "SCAN";
 					gpos::ARENAIOstream table_name;
 					child_expression->Pop()->OsPrint(table_name);
 					std::string temp = table_name.ss.str();
@@ -1683,7 +1574,7 @@ struct PlanTree
 						PlanTreeNode * table = new PlanTreeNode(NodeData(0.0, temp.substr(start, end-start), "TABLE"));
 						cur->push_back(table);
 					}
-				} else if(name_len > 4 && !strcmp(expression_name + name_len -4, "Join"))  // Join 操作符，设置 JOIN 标签
+				} else if(name_len > 4 && !strcmp(expression_name + name_len -4, "Join"))
 				{
 					cur->data.tag = "JOIN";
 				}
@@ -1693,15 +1584,12 @@ struct PlanTree
 					insert_child((*child_expression)[i], *cur);
 				}
 
-				// 检查 如果是 Motion 操作节点，并且节点下只有一个子节点，并且该节点的 cost 和 子节点的 cost 相同，则去除该节点
 				const char * motionOp = "Motion";
 				if (cur->data.name.size() > 6 && cur->data.name.compare(0, 6, motionOp) == 0 && cur->size() == 1 && 
-					cur->data.cost - (*cur)[0]->data.cost < 0.1 * cur->data.cost )  // 该节点与子节点的 cost 差异很小
+					cur->data.cost - (*cur)[0]->data.cost < 0.1 * cur->data.cost )
 				{
-					// 将当前节点从父节点中去除并将子节点移入到父节点的孩子中
 					parent.child[parent.size()-1] = (*cur)[0];
-					// 释放当前节点的内存
-					cur->child[0] = nullptr;  // 析构函数会递归地释放孩子的内存，所以用空指针代替
+					cur->child[0] = nullptr;
 					delete cur;
 				}
 #ifdef ARENA_PHYSICAL
@@ -1723,13 +1611,11 @@ struct PlanTree
 			delete root;
 	}
 
-	// 取得这棵树的字符串表示
-	void repreOfStr()  // representation of string
+	void repreOfStr()
 	{
 		str_expression = root->get_string();
 	}
 
-	// 用于生成后缀树
 	void generateSuffixTree()
 	{
 		repreOfStr();
@@ -1737,14 +1623,12 @@ struct PlanTree
 		suffixTree tree(0, 0, -1, &context);
 		for (int i = 0; i <= context.inputLength; ++i)
 			carryPhase(tree, i);
-		context.finishing_work();  // 做一些收尾工作
+		context.finishing_work();
 	}
 
-	// 用于生成由节点内容组成的字符串
-	// 用于计算编辑距离
 	void getNodeStr()
 	{
-		std::queue<PlanTreeNode*> node_queue;  // 采用层序遍历的方式来生成节点的内容
+		std::queue<PlanTreeNode*> node_queue;
 		PlanTreeNode* current_node = NULL;
 		node_queue.push(root);
 		while (!node_queue.empty())
@@ -1752,7 +1636,6 @@ struct PlanTree
 			current_node = node_queue.front();
 
 			str_of_node.push_back(&(current_node->data.name));
-			// 将所有孩子节点加入到队列节点
 			for (std::size_t i = 0; i < current_node->child.size(); ++i)
 			{
 				node_queue.push(current_node->child[i]);
@@ -1761,32 +1644,19 @@ struct PlanTree
 		}
 	}
 
-
-	// 生成用于计算 tree edit dist 的 json 格式的字符串
 	void TED_json()
 	{
 		json_str = "{\"root\":";
 		node_num = 0;
-		root->ted_json(json_str, &node_num);  // 传递 node_num 不仅可以对 节点数量进行计数，还能用于标注 id
+		root->ted_json(json_str, &node_num);
 		json_str += "}";
-
-		// 用于调试
-		// std::ofstream fout("/tmp/json_temp");
-		// if (fout.is_open())
-		// {
-		// 	fout << json_str << std::endl;
-		// 	fout << node_num;
-		// 	fout.close();
-		// }
 	}
 
-	// 根据 CExpressoin 的表达式构造一个 Plan 树
 	void init(T* plan)
 	{
 		if (NULL != plan)
 		{
 			root = new PlanTreeNode(NodeData(get_cost(plan), get_name(plan)));
-			// 如果节点是 表扫描操作 或者是 连接操作，设置 node 的 tag
 			if (root->data.name.size() > 4)
 			{
 				std::size_t compareStart = root->data.name.size() - 4;
@@ -1804,30 +1674,25 @@ struct PlanTree
 				insert_child((*plan)[i], *root);
 			}
 
-			// 检测节点是否是 Motion 节点，如果是，删除
 			if (root->data.name.size() > 6 && root->data.name.compare(0, 6, "Motion") == 0 && root->size() == 1 && 
-				root->data.cost - (*root)[0]->data.cost < 0.1 * root->data.cost )  // 该节点与子节点的 cost 差异很小
+				root->data.cost - (*root)[0]->data.cost < 0.1 * root->data.cost )
 			{
-				// 临时存储子节点的地址
 				auto temp = (*root)[0];
-				// 释放当前节点的内存
-				root->child[0] = nullptr;  // 析构函数会递归地释放孩子的内存，所以用空指针代替
+				root->child[0] = nullptr;
 				delete root;
 				root = temp;
 			}
 		}
-		// cost_log = log(root->data.cost);  // 用于计算归一化的 cost 距离
 		init_flag = true;
 		generateSuffixTree();
 		getNodeStr();
 	}
 
-	void init(T* plan, int flag)  // 与上述 init 函数的功能相同，但是该函数中将各个部分进行了拆分，用于测试不同初始化的时间
+	void init(T* plan, int flag)
 	{
 		if (flag == 0 && NULL != plan)
 		{
 			root = new PlanTreeNode(NodeData(get_cost(plan), get_name(plan)));
-			// 如果节点是 表扫描操作 或者是 连接操作，设置 node 的 tag
 			if (root->data.name.size() > 4)
 			{
 				std::size_t compareStart = root->data.name.size() - 4;
@@ -1840,20 +1705,16 @@ struct PlanTree
 				}
 			}
 
-			// 添加子节点
 			for (std::size_t i = 0; i < plan->Arity(); ++i)
 			{
 				insert_child((*plan)[i], *root);
 			}
 
-			// 检测节点是否是 Motion 节点，如果是，删除
 			if (root->data.name.size() > 6 && root->data.name.compare(0, 6, "Motion") == 0 && root->size() == 1 && 
-				root->data.cost - (*root)[0]->data.cost < 0.1 * root->data.cost )  // 该节点与子节点的 cost 差异很小
+				root->data.cost - (*root)[0]->data.cost < 0.1 * root->data.cost )
 			{
-				// 临时存储子节点的地址
 				auto temp = (*root)[0];
-				// 释放当前节点的内存
-				root->child[0] = nullptr;  // 析构函数会递归地释放孩子的内存，所以用空指针代替
+				root->child[0] = nullptr;
 				delete root;
 				root = temp;
 			}
@@ -1862,8 +1723,6 @@ struct PlanTree
 		init_flag = true;
 		if (flag == 1)
 		{
-			// generateSuffixTree();
-			// 分开检验各个部分的时间
 			repreOfStr();
 		}
 		else if (flag == 2)
@@ -1877,35 +1736,32 @@ struct PlanTree
 				carryPhase(testTree, i);
 		}
 		else if (flag == 5)
-			context.finishing_work1();  // 做一些收尾工作
+			context.finishing_work1();
 		else if (flag == 6)
-		 	context.finishing_work2();  // 做一些收尾工作
-		else if (flag == 7) { // 对后缀树进行剪枝，原方法不需要剪枝
+		 	context.finishing_work2();
+		else if (flag == 7) {
 			purnTree(testTree);
 			getSubTree(context, 0, std::string{});
 		}
 	}
 
 private:
-	// 用于利用剪枝后的后缀树生成子树的统计信息
 	void getSubTree(suffixTreeContext& context_var, int node, std::string s){
 		Edge lchild = context_var.findEdge(node, '[');
 		Edge rchild = context_var.findEdge(node, ']');
 
-		// 叶子节点，记录并返回
 		if (!lchild.valid() && !rchild.valid()) {
-			if (s.back() == '$') {  // 在剪枝的过程中，可能有些节点保留了最后的哨兵字符 '$', 而另外一些没有保留，这里统一删去该字符
+			if (s.back() == '$') {
 				s.pop_back();
 			}
 
-			subTree[s] = context_var.nodeArray[node].lvs;  // 每个节点叶子节点的数量，代表该节点出现的数量
+			subTree[s] = context_var.nodeArray[node].lvs;
 			return;
 		}
 
-		// 不是叶子节点，需要对两个子节点分别进行处理
 		if (lchild.valid()) {
-			std::string temp = s;  // 生成临时字符串，方式对原字符串的修改
-			for (auto i=lchild.startLabelIndex; i<=lchild.endLabelIndex; i++) {  // 将该边上的子串加到遍历过的字符串中
+			std::string temp = s;
+			for (auto i=lchild.startLabelIndex; i<=lchild.endLabelIndex; i++) {
 				temp += context_var.s[i];
 			}
 			getSubTree(context_var, lchild.endNode, temp);
@@ -1923,40 +1779,33 @@ private:
 	}
 
 public:
-	//****************** 距离相关的一些函数 ********************************/
-	// 计算两棵树之间的距离
+	//****************** functions about distance ********************************/
 	double distance(PlanTree& other)
 	{
-		// double s_dist = context.distance(other.context);  // 结构的距离
 		double s_dist = structure_dist(other);
-		double c_dist = editDist(str_of_node, other.str_of_node);  // 内容的距离
+		double c_dist = editDist(str_of_node, other.str_of_node);
 		double cost = cost_dist(other);
 		return (1-gLambda)*(offset + other.offset) / 2 +gLambda * (s_dist * gSWeight + c_dist * gCWeight + cost * gCostWeight);
 	}
 
 	double distance_with_best(PlanTree &other)
 	{
-		// double s_dist = context.distance(other.context);  // 结构的距离
 		double s_dist = structure_dist(other);
-		double c_dist = editDist(str_of_node, other.str_of_node);  // 内容的距离
+		double c_dist = editDist(str_of_node, other.str_of_node);
 		double cost = cost_dist(other);
 
 		s_dist_best = s_dist;
 		c_dist_best = c_dist;
 		cost_dist_best = cost;
-		// offset = abs(0.5*(s_dist+c_dist) - cost);  // 原本的价值评定方式：cost 和 结构以及内容的偏离程度
-		offset = cost - (s_dist+c_dist);  // 新的价值评定：cost 与 (s_dist+c_dist) 的差值，值越大，价值越高
+		offset = cost - (s_dist+c_dist);
 
 		return (1-gLambda)*offset / 2 +gLambda * (s_dist * gSWeight + c_dist * gCWeight + cost * gCostWeight);
 	}
 
-	// 返回两者之间结构的差距
-	// 当前使用的方法是将子树转换为字符串，寻找相同字符串的个数
 	double structure_dist(PlanTree& other)
 	{
 		int res = 0;
 		
-		// 找到比较小的记录
 		std::unordered_map<std::string, int> * small, *large;
 		if (subTree.size() < other.subTree.size()){
 			small = &subTree;
@@ -1966,44 +1815,36 @@ public:
 			large = &subTree;
 		}
 
-		// 找到两棵树的公共子树，并计算相应的乘积
 		for (auto iter=small->begin(); iter != small->end() ; iter++){
 			const std::string & key = iter->first;
 			auto iter2 = large->find(key);
-			if (iter2 != large->end()) {  // 存在公共子串
+			if (iter2 != large->end()) {
 				res += iter->second * iter2->second;
 			}
 		}
 
-		// 计算结构距离 : 
 		double temp  = sqrt(context.self_kernel * other.context.self_kernel);
 		temp = (double)(res) / temp;
 		return sqrt(1.0 - temp);
 	}
 
-	// 返回两者之间内容的差距
 	double content_dist(PlanTree& other)
 	{
 		return editDist(str_of_node, other.str_of_node);
 	}
 
-	// 返回两者之间 cost 的差异
 	double cost_dist(PlanTree& other)
 	{
-		double res = abs(root->data.cost - other.root->data.cost) / max_cost;  // 没有取 log 的 cost 差异
-		// double res = abs(cost_log - other.cost_log) / max_cost;  // 对 cost 取log，再计算差异
+		double res = abs(root->data.cost - other.root->data.cost) / max_cost;
 		return res;
 	}
-	//*****************************************************************/
 
-	// 输出表达式的内容
 	void write(std::ostream &out)
 	{
 		if (NULL != root)
 			root->output(out);
 	}
 
-	// 以 json 的格式输出表达式的内容
 	void write_json(std::ostream &out)
 	{
 		if (NULL != root)
@@ -2098,40 +1939,7 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 				parent.push_back(cur);
 				int name_len = strlen(expression_name);
 
-				// 检查是否是 Index 操作，如果是，输出详细信息
-				if (name_len > 5 && !strncmp(expression_name, "Index", 5)){  // IndexScan
-#ifdef ARENA_DEBUG
-					// std::ofstream fout_index("/tmp/Index");
-					// fout_index << "存在 index 节点\n";
-#endif
-					gpos::ARENAIOstream stream;
-					// 这一步用于输出索引名
-					if (strncmp(expression_name, "IndexS", 6) == 0){
-						dynamic_cast<CPhysicalIndexScan*>(child_expression->Pop())->ARENAGetInfo(stream);
-					}else if (strncmp(expression_name, "IndexO", 6) == 0){
-						dynamic_cast<CPhysicalIndexOnlyScan*>(child_expression->Pop())->ARENAGetInfo(stream);
-					}
-					stream << '\n';
-
-					// 这一步用于取得索引的过滤条件
-					if (child_expression->Arity() == 1){  // 恰好只有一个孩子
-						ARENAGetIndexInfo((*child_expression)[0], stream);
-					} else {  // 有多个孩子或者没有孩子
-						stream << "子表达式的个数与预期不符，子表达式的个数为：" << child_expression->Arity();
-					}
-					cur->data.info = stream.ss.str();
-
-#ifdef ARENA_DEBUG
-					// if (fout_index.is_open()){
-					// 	fout_index << expression_name << '\n';
-					// 	fout_index << stream.ss.str();
-					// 	fout_index.close();
-					// }
-#endif
-				}
-
 				// 需要检查名字是否是 Scan 类型，如果是，需要获得 relation 的名字
-
 				// 字符串长度大于4，并且最后四个字母是 Scan，需要取得表名
 				if (name_len > 4 && !strcmp(expression_name + name_len - 4, "Scan"))
 				{
@@ -2602,7 +2410,6 @@ void ARENAGTFilter(std::unordered_map<std::string, std::vector<int>> & groupTree
 void ARENAAos(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep);
 
 /******************** ARENA EXP ********************/
-#ifdef ARENA_EXP
 int getIndex(char c)
 {
 	switch (c)
@@ -3254,40 +3061,7 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 				parent.push_back(cur);
 				int name_len = strlen(expression_name);
 
-				// 检查是否是 Index 操作，如果是，输出详细信息
-				if (name_len > 5 && !strncmp(expression_name, "Index", 5)){  // IndexScan
-#ifdef ARENA_DEBUG
-					// std::ofstream fout_index("/tmp/Index");
-					// fout_index << "存在 index 节点\n";
-#endif
-					gpos::ARENAIOstream stream;
-					// 这一步用于输出索引名
-					if (strncmp(expression_name, "IndexS", 6) == 0){
-						dynamic_cast<CPhysicalIndexScan*>(child_expression->Pop())->ARENAGetInfo(stream);
-					}else if (strncmp(expression_name, "IndexO", 6) == 0){
-						dynamic_cast<CPhysicalIndexOnlyScan*>(child_expression->Pop())->ARENAGetInfo(stream);
-					}
-					stream << '\n';
-
-					// 这一步用于取得索引的过滤条件
-					if (child_expression->Arity() == 1){  // 恰好只有一个孩子
-						ARENAGetIndexInfo((*child_expression)[0], stream);
-					} else {  // 有多个孩子或者没有孩子
-						stream << "子表达式的个数与预期不符，子表达式的个数为：" << child_expression->Arity();
-					}
-					cur->data.info = stream.ss.str();
-
-#ifdef ARENA_DEBUG
-					// if (fout_index.is_open()){
-					// 	fout_index << expression_name << '\n';
-					// 	fout_index << stream.ss.str();
-					// 	fout_index.close();
-					// }
-#endif
-				}
-
 				// 需要检查名字是否是 Scan 类型，如果是，需要获得 relation 的名字
-
 				// 字符串长度大于4，并且最后四个字母是 Scan，需要取得表名
 				if (name_len > 4 && !strcmp(expression_name + name_len - 4, "Scan"))
 				{
@@ -3420,7 +3194,6 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 public:
 	//****************** 距离相关的一些函数 ********************************/
 };
-#endif
 /************************************************************/
 
 
@@ -3432,8 +3205,6 @@ std::vector<CExpression *> plan_buffer_for_exp;  // 用于存储所有 CExpressi
 std::vector<PlanTree<CExpression>> plan_trees;  // 添加元素，辅助线程将其转换为 PlanTree
 std::vector<PlanTreeHash<CExpression>> plan_trees_hash;
 std::vector<PlanTreeHash<CExpression>> plan_trees_send;  // 用于最后发送相关 plan 时，生成 plan 的详细信息
-
-// #define ARENA_EXP
 
 
 ///**************************************************/
@@ -4064,26 +3835,6 @@ double FindKDiffMethodExp(std::vector<T>& plans, std::vector<int>& res, std::pri
 	return res_dist;
 }
 
-void reset_plan()
-{
-	std::ofstream fout("/tmp/best_plan.txt");
-	fout.close();
-}
-
-void output_plan(CExpression * plan, int index = 0)
-{
-	PlanTree<CExpression> tree;
-	tree.init(plan);
-	std::ofstream fout("/tmp/best_plan.txt", std::ios_base::out|std::ios_base::app);
-	if (fout.is_open())
-	{
-		fout << "/************************* " << index << " *************************/\n";
-		tree.write(fout);
-		fout << "/**********************************************************/\n\n";
-		fout.close();
-	}
-}
-
 //---------------------------------------------------------------------------
 //	@function:
 //		CEngine::CEngine
@@ -4696,7 +4447,6 @@ CEngine::Pmemotmap()
 	COptimizerConfig *optimizer_config =
 		COptCtxt::PoctxtFromTLS()->GetOptimizerConfig();
 
-	// 第一次执行 memotmap 函数
 	if (NULL == m_pmemo->Pmemotmap())
 	{
 		m_pqc->Prpp()->AddRef();
@@ -4715,7 +4465,7 @@ CEngine::Pmemotmap()
 		m_pmemo->BuildTreeMap(poc);
 		optimizer_config->GetEnumeratorCfg()->SetPlanSpaceSize(
 			m_pmemo->Pmemotmap()->UllCount());
-		fout_time << "统计 Plan 的数量(构造 GT) 花费的时间为: " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
+		fout_time << "time of generating Group Frost is(ms) : " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
 
 		/**************************************************/
 
@@ -5717,12 +5467,12 @@ CEngine::Optimize()
 
 	const ULONG ulJobs =
 		std::min((ULONG) GPOPT_JOBS_CAP,
-				 (ULONG)(m_pmemo->UlpGroups() * GPOPT_JOBS_PER_GROUP));  // min(最大的 optimization job 数量, 每个 group 中的job数量×group数量)
-	CJobFactory jf(m_mp, ulJobs);  // 构造 jobfactory(内存池，job的最大数量)
-	CScheduler sched(m_mp, ulJobs);  // 构造调度器
+				 (ULONG)(m_pmemo->UlpGroups() * GPOPT_JOBS_PER_GROUP));
+	CJobFactory jf(m_mp, ulJobs); 
+	CScheduler sched(m_mp, ulJobs); 
 
 	CSchedulerContext sc;
-	sc.Init(m_mp, &jf, &sched, this);  // 初始化调度器的上下文
+	sc.Init(m_mp, &jf, &sched, this);
 
 	const ULONG ulSearchStages = m_search_stage_array->Size();
 	for (ULONG ul = 0; !FSearchTerminated() && ul < ulSearchStages; ul++)
@@ -5730,8 +5480,8 @@ CEngine::Optimize()
 		PssCurrent()->RestartTimer();
 
 		// optimize root group
-		m_pqc->Prpp()->AddRef();  // 查询上下文(Engine中的成员变量)-> 计划性质访问器(plan properties )->
-		COptimizationContext *poc = GPOS_NEW(m_mp) COptimizationContext(  // 构造优化器上下文。优化器上下文存储了优化器构造的 plan 需要满足的性质
+		m_pqc->Prpp()->AddRef();
+		COptimizationContext *poc = GPOS_NEW(m_mp) COptimizationContext(
 			m_mp, PgroupRoot(), m_pqc->Prpp(),
 			GPOS_NEW(m_mp) CReqdPropRelational(GPOS_NEW(m_mp) CColRefSet(
 				m_mp)),	 // pass empty required relational properties initially
@@ -5740,7 +5490,7 @@ CEngine::Optimize()
 			m_ulCurrSearchStage);
 
 		// schedule main optimization job
-		ScheduleMainJob(&sc, poc);  // poc 是优化器上下文，将根group的job加入到等待队列
+		ScheduleMainJob(&sc, poc);
 
 		// run optimization job
 		CScheduler::Run(&sc);
@@ -5751,11 +5501,6 @@ CEngine::Optimize()
 		CExpression *pexprPlan = m_pmemo->PexprExtractPlan(
 			m_mp, m_pmemo->PgroupRoot(), m_pqc->Prpp(),
 			m_search_stage_array->Size());
-		//************************ARENA**************************/
-		// 用于调试
-		// reset_plan();
-		// output_plan(pexprPlan);  // output the best plan
-		//************************ARENA**************************/
 		PssCurrent()->SetBestExpr(pexprPlan);
 
 		FinalizeSearchStage();
@@ -5794,7 +5539,7 @@ CEngine::PexprUnrank(ULLONG plan_id)
 	// because we are doing a DFS traversal of the TreeMap.
 	CDrvdPropCtxtPlan *pdpctxtplan =
 		GPOS_NEW(m_mp) CDrvdPropCtxtPlan(m_mp, false /*fUpdateCTEMap*/);
-	CExpression *pexpr = Pmemotmap()->PrUnrank(m_mp, pdpctxtplan, plan_id);  // 获取 plan 的关键部分
+	CExpression *pexpr = Pmemotmap()->PrUnrank(m_mp, pdpctxtplan, plan_id);
 	pdpctxtplan->Release();
 
 #ifdef GPOS_DEBUG
@@ -5891,7 +5636,7 @@ CEngine::PexprExtractPlan()
 ULLONG
 CEngine::UllRandomPlanId(ULONG *seed)
 {
-	// ULLONG ullCount = Pmemotmap()->UllCount();  // 暂时修改
+	// ULLONG ullCount = Pmemotmap()->UllCount();
 	ULLONG ullCount = 39999;
 	ULLONG plan_id = 0;
 	++seed;
@@ -5904,7 +5649,7 @@ CEngine::UllRandomPlanId(ULONG *seed)
 	do
 	{
 		plan_id = u(e);
-	} while( find_index.find(plan_id) != find_index.end());  // 当这个 id 已经被记录了，重复找
+	} while( find_index.find(plan_id) != find_index.end());
 	find_index.insert(plan_id);
 
 	return plan_id;
@@ -5917,7 +5662,6 @@ CEngine::UllRandomPlanId(ULONG *seed)
 //	@doc:
 //		Extract a plan sample and handle exceptions according to enumerator
 //		configurations
-//		提取一个 plan sample，并且根据枚举器的配置来处理异常
 //
 //---------------------------------------------------------------------------
 BOOL
@@ -5976,51 +5720,39 @@ void
 CEngine::SamplePlans()
 {
 	//************************ARENA**************************/
-	// 测试采样时间
-#ifdef ARENA_DEBUG
 	auto time_start = std::chrono::steady_clock::now();
 	auto all_start = time_start;
 	std::ofstream fout_time("/tmp/time_record");
 	std::ofstream fout_plan("/tmp/Plans");
-	fout_plan << "# 执行了采样\n";
-#endif
 
-	// 读取配置信息
 	readConfig();
-#ifdef ARENA_GTEXP
-	// 当进行 Group Tree 的过滤实验时，执行的代码
+	// If /tmp/gtArg exists, the parameters about LAPS and GFP will be read from it, used for experiment
 	std::ifstream fin_gt("/tmp/gtArg");
 	if(fin_gt.is_open())
 	{
-		// 读取第一行，其格式为: 阈值数量  距离阈值
+		// read the first line, the format is : GFP threshold, difference threshold, LAPS threshold
 		fin_gt >> gGTNumThreshold;
 		fin_gt >> gGTFilterThreshold;
 		fin_gt >> gSampleThreshold;
 		fin_gt.close();
 	}
-#endif
-	#ifdef ARENA_DEBUG
-	fout_plan << "# 配置信息读取完成\n";
-	fout_plan << "# 全局配置参数如下：\n";
-	fout_plan << "plan 数量: " << gARENAK << '\n';
+
+	fout_plan << "The configuration parameters are as follows: \n";
+	fout_plan << "plan number: " << gARENAK << '\n';
 	fout_plan << "s_weight: " << gSWeight << '\n';
 	fout_plan << "c_weight: " << gCWeight << '\n';
 	fout_plan << "cost_weight: " << gCostWeight << '\n';
 	fout_plan << "lambda: " << gLambda << '\n';
 	fout_plan << "resultFileName: " << gResFile << '\n';
-	fout_plan << "进行过滤所需要的 plan 数量阈值为: " << gGTNumThreshold << '\n';
-	fout_plan << "过滤 plan 的距离阈值: " << gGTFilterThreshold << '\n';
-	fout_plan << "采样阈值为: " << gSampleThreshold << '\n';
-	fout_plan << "用户选择的方法: " << gMethod << '\n';
+	fout_plan << "GFP threshold: " << gGTNumThreshold << '\n';
+	fout_plan << "distance threshold: " << gGTFilterThreshold << '\n';
+	fout_plan << "LAPS threshold: " << gSampleThreshold << '\n';
 	if(gTEDFlag)
-		fout_plan << "使用 Tree Edit Flag 计算距离\n";
+		fout_plan << "use Tree Edit Flag to calculate structure difference.\n";
 	else
-		fout_plan << "使用 subtree kernel 计算距离\n";
+		fout_plan << "use subtree kernel to calculate structure difference.\n";
 
-	// 获取 root Group 的 expressioin 的数量
-	// fout_plan << "root Group 中 expression 的总数量；" << m_pmemo->PgroupRoot()->UlGExprs() << '\n';
-	#endif
-	//************************ARENA**************************/
+	//************************ARENA END**************************/
 	COptimizerConfig *optimizer_config =
 		COptCtxt::PoctxtFromTLS()->GetOptimizerConfig();
 	GPOS_ASSERT(NULL != optimizer_config);
@@ -6030,18 +5762,17 @@ CEngine::SamplePlans()
 	pec->ClearSamples();
 
 	ULLONG ullCount = Pmemotmap()->UllCount();
+
 	//************************ARENA**************************/
-	#ifdef ARENA_DEBUG
-	fout_plan << "# 所有可能的组合数为：" << ullCount << std::endl;
-	#endif
-	gIsGTFilter = ullCount >= (ULLONG)gGTNumThreshold;  // 如果 plan 的数量大于50000，自动进行过滤
+	gIsGTFilter = ullCount >= (ULLONG)gGTNumThreshold;
 	gisSample = gJoin >= gSampleThreshold;
-	if(gisSample)  // 如果执行采样，那么就没有必要进行过滤了
+	if(gisSample)
 	{
 		gIsGTFilter = false;
 	}
-	std::unordered_set<int> filteredId;  // 将要被过滤掉的 id
-	//**************************************************/
+	std::unordered_set<int> filteredId;  // the plans to be filtered
+	//***********************ARENA END***************************/
+
 	if (0 == ullCount)
 	{
 		// optimizer generated no plans
@@ -6057,73 +5788,47 @@ CEngine::SamplePlans()
 								  m_search_stage_array->Size());
 	CCost costBest = pexpr->Cost();
 	pec->SetBestCost(costBest);
+
 	//************************ARENA**************************/
-	fout_plan << "TreeNode 的数量为：" << m_pmemo->Pmemotmap()->UlNodes() << std::endl;
 	std::vector<std::string>& groupTree = m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTree;
-	fout_plan << "GroupTree 的数量为：" << groupTree.size() << std::endl;
-	// 打印 ARENA_groupTreePlus 的信息
+	fout_plan << "the number of GroupTree is: " << groupTree.size() << std::endl;
 	std::unordered_map<std::string, std::vector<int>>& groupTreePlus = m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTreePlus;
 #ifdef ARENA_COSTFT
 	std::unordered_map<int, CCost> & id2Cost = m_pmemo->Pmemotmap()->ProotNode()->ARENA_id2Cost;
 	fout_plan << std::showpoint;
 #endif
-	fout_plan << "ARENA_groupTreePlus 中包含的 GroupTree 的数量为：" << groupTreePlus.size() << '\n';
-	// for(auto iter_temp = id2Cost.begin();iter_temp != id2Cost.end();iter_temp++)
-	// {
-	// 	double temp_cost = iter_temp->second.Get();
-	// 	if(temp_cost > max_cost)
-	// 		max_cost = temp_cost;
-	// }
-	// fout_plan << "最大的 cost 为: " << max_cost << '\n';
+	fout_plan << "the number of GroupTree in ARENA_groupTreePlus is: " << groupTreePlus.size() << '\n';
 
-// 	for(auto & p: groupTreePlus)  // 打印每个 GroupTree 对应的编号
-// 	{
-// 		fout_plan << "*" <<  p.first << " :  ";
-// 		for(auto &id: p.second)
-// 		{
-// #ifdef ARENA_COSTFT
-// 			fout_plan << id << '(' << id2Cost.at(id).Get() << ") ";
-// #else
-// 			fout_plan << id << ' ' ;
-// #endif
-// 		}
-// 		fout_plan << '\n';
-// 	}
-
-	// best plan 放在 plan_trees 中的第一个元素
+	// record the QEP
 	plan_buffer.push(pexpr);
-#ifdef ARENA_EXP
 	plan_buffer_for_exp.push_back(pexpr);
-#endif
 	{
-		PlanTreeHash<CExpression> tempTree;  // 这个是 best plan
+		PlanTreeHash<CExpression> tempTree;
 		tempTree.init(pexpr);
 
-		// 如果需要利用 Group Tree 进行过滤，并且没有达到采样的阈值
+		// if use the GFP strategy
 		if(gIsGTFilter)
 		{
-			fout_plan << "需要进行过滤\n";
-			// 寻找所有需要被过滤的 GroupTree 以及其对应的 plan 的 id，将其记录到 filteredId 中
+			fout_plan << "use GFP\n";
 #ifdef ARENA_COSTFT
 			ARENAGTFilter(m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTreePlus, filteredId, tempTree, &id2Cost);
 #else
 			ARENAGTFilter(m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTreePlus, filteredId, tempTree, nullptr);
 #endif
-			fout_plan << "要过滤的 plan_id 为: ";
+			fout_plan << "the plans need to be filtered out:  ";
 			for(auto tempIter=filteredId.begin(); tempIter != filteredId.end(); tempIter++)
 			{
 				fout_plan << *tempIter << ' ';
 			}
 			fout_plan << '\n';
 		}
-		// 如果需要采样
+		// if use the LAPS
 		if(gisSample)
 		{
-			fout_plan << "需要进行采样\n";
+			fout_plan << "use LAPS\n";
 			ullTargetSamples = 10000;
 			ARENAAos(m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTreePlus, filteredId, tempTree);
 
-			fout_plan << "要采样的数量为: " << filteredId.size() << "其 id 为: ";
 			for(auto tempIter=filteredId.begin(); tempIter != filteredId.end(); tempIter++)
 			{
 				fout_plan << *tempIter << ' ';
@@ -6131,15 +5836,13 @@ CEngine::SamplePlans()
 			fout_plan << '\n';
 		}
 
-	#ifdef ARENA_DEBUG
 		fout_plan << tempTree.root->generate_json();
 		fout_plan << "\n";
-	#endif
 	}
 	// plan_trees.push_back(PlanTree<CExpression>());
 	// plan_trees.back().init(pexpr);
 	// pexpr->Release();
-	//************************ARENA**************************/
+	//************************ARENA END**************************/
 
 	// generate randomized seed using local time
 	TIMEVAL tv;
@@ -6148,185 +5851,144 @@ CEngine::SamplePlans()
 
 	// set maximum number of iterations based number of samples
 	// we use maximum iteration to prevent infinite looping below
-	// const ULLONG ullMaxIters = ullTargetSamples * GPOPT_SAMPLING_MAX_ITERS;  // 最大的迭代次数是目标采样数量 X 30
-	// ULLONG ullIters = 0;  // 记录当前的迭代次数
-	ULLONG ull = 0;  // 记录当前的采样数量
+	ULLONG ull = 0;
 
-	std::vector<ULLONG> plan_id_list;
-	{
-		plan_id_list.reserve(40000);
-		std::ifstream fin_temp("/tmp/plan_id.txt");
-		if(fin_temp.is_open())
-		{
-			fout_plan << "成功打开 id 文件\n";
-			ULLONG temp_id = 0;
-			for(int i=0;i<40000;i++)
-			{
-				fin_temp >> temp_id;
-				plan_id_list.push_back(temp_id);
-			}
-			fin_temp.close();
-		}
-	}
+	// std::vector<ULLONG> plan_id_list;
+	// {
+	// 	plan_id_list.reserve(40000);
+	// 	std::ifstream fin_temp("/tmp/plan_id.txt");
+	// 	if(fin_temp.is_open())
+	// 	{
+	// 		fout_plan << "成功打开 id 文件\n";
+	// 		ULLONG temp_id = 0;
+	// 		for(int i=0;i<40000;i++)
+	// 		{
+	// 			fin_temp >> temp_id;
+	// 			plan_id_list.push_back(temp_id);
+	// 		}
+	// 		fin_temp.close();
+	// 	}
+	// }
 
 	while (ull < ullTargetSamples)
 	{
 		// generate id of plan to be extracted
-		ULLONG plan_id = ull;  // 如果进行全部采样，当前的 plan_id 就是当前的采样数量，默认情况下 plan id = ull，除采样情况例外
+		ULLONG plan_id = ull;
 		
-		if(gisSample)  // 如果需要进行采样，随机生成 plan id
+		if(gisSample)  // if use the LAPS strategy
 		{
 			plan_id = UllRandomPlanId(&seed);
-			plan_id = plan_id_list[(int)plan_id];
+			// plan_id = plan_id_list[(int)plan_id];
 		}
-		fout_plan << "当前的 plan id 为: " << plan_id << '\n';
+		fout_plan << "plan id: " << plan_id << '\n';
 
-		if(gIsGTFilter && filteredId.find(plan_id) != filteredId.end())  // 需要用过滤算法，并且这个 id 的 plan 与 qep 的结构差异很大
+		if(gIsGTFilter && filteredId.find(plan_id) != filteredId.end())  // if use the GFP strategy
 		{
-			fout_plan << "过滤掉 plan " << plan_id << '\n';
+			fout_plan << "filter out plan: " << plan_id << '\n';
 			ull++;
 			continue;
 		}
 
 		pexpr = NULL;
-		// BOOL fAccept = false;
 		
-		// 下面的整体流程为：1、是否能够找到有效的 plan (FValidPlanSample) 2、是否可以将该 plan 加入到采样中
 		if (FValidPlanSample(pec, plan_id, &pexpr))
 		{
-			// add plan to the sample if it is below cost threshold
-			// 如果当前的 cost 低于 cost 阈值，将当前的 plan 加入到采样结果中
-			// CCost cost = pexpr->Cost();
-			//************************ARENA**************************/
-			// 保留该 plan，将其加入都队列中
-			// fAccept = pec->FAddSample(plan_id, cost);  // 这个可能没有用!!!!!!!!
-			// fAccept = true;
 			plan_buffer.push(pexpr);
-#ifdef ARENA_EXP
 			plan_buffer_for_exp.push_back(pexpr);
-#endif
-			// 输出到文件中用于测试
-#ifdef ARENA_DEBUG
 			{
 				PlanTreeHash<CExpression> tempTree;
 				tempTree.init(pexpr);
 				fout_plan << '$' << tempTree.root->generate_json();
 				fout_plan << "\n";
 			}
-#endif
-			//************************ARENA**************************/
 			pexpr = NULL;
 		}
 		else
 		{
 #ifdef ARENA_DEBUG
-			fout_plan << "# FValidPlanSample 失败\n";
+			fout_plan << "# FValidPlanSample fail\n";
 #endif
 		}
 
 		ull++;
 	}
-	if(gisSample)  // 用来将 Aos 策略选出的 plan 添加到采样 plan 中
+	
+	// if use the LAPS strategy, add the plans selected by LAPS to random plans
+	if(gisSample)
 	{
 		gAosStart = plan_buffer_for_exp.size();
 		for(auto id: filteredId)
 		{
 			ULLONG plan_id = (ULLONG)id;
-			fout_plan << "当前的 plan id 为: " << plan_id << '\n';
+			fout_plan << "plan id: " << plan_id << '\n';
 
 			pexpr = NULL;
 			
-			// 下面的整体流程为：1、是否能够找到有效的 plan (FValidPlanSample) 2、是否可以将该 plan 加入到采样中
 			if (FValidPlanSample(pec, plan_id, &pexpr))
 			{
 				plan_buffer.push(pexpr);
-	#ifdef ARENA_EXP
 				plan_buffer_for_exp.push_back(pexpr);
-	#endif
-				// 输出到文件中用于测试
-	#ifdef ARENA_DEBUG
 				{
 					PlanTreeHash<CExpression> tempTree;
 					tempTree.init(pexpr);
 					fout_plan << '$' << tempTree.root->generate_json();
 					fout_plan << "\n";
 				}
-	#endif
 				pexpr = NULL;
 			}
 			else
 			{
-	#ifdef ARENA_DEBUG
-				fout_plan << "# FValidPlanSample 失败\n";
-	#endif
+				fout_plan << "# FValidPlanSample fail\n";
 			}
 		}
 	}
 
-
-
-#ifdef ARENA_DEBUG
-	fout_plan << "ull: " << ull << "\tullTargetSamples: " << ullTargetSamples
-			  << std::endl;
-
-	fout_plan << "找到的有效 plan 个数为：" << plan_buffer.size() << '\n';
-
+	fout_plan << "ull: " << ull << "\tullTargetSamples: " << ullTargetSamples << std::endl;
+	fout_plan << "the number of valid plans is: " << plan_buffer.size() << '\n';
 	if (gResFile.size() == 0 || gResFile.compare("###") == 0){
-		fout_plan << "# 查询请求的结果文件名不存在，不会进行 ARENA 查询\n";
+		fout_plan << "# Experiment \n";
 	}
 	fout_plan.close();
-#endif
 
 	//************************ARENA**************************/
-#ifdef ARENA_DEBUG
-	auto time_end = std::chrono::steady_clock::now();  // 采样结束
-	if (fout_time.is_open())						   // 输出时间
+	auto time_end = std::chrono::steady_clock::now();
+	if (fout_time.is_open())
 	{
-		fout_time << "采样花费的时间为："
-				  << (std::chrono::duration_cast<std::chrono::milliseconds>(time_end - time_start)).count()
-				  << "ms\n";
+		fout_time << "The sampling time is: " << (std::chrono::duration_cast<std::chrono::milliseconds>(time_end - time_start)).count() << "ms\n";
 	}
-
 	time_start = std::chrono::steady_clock::now();
-#endif
+
+	// Normal ARENA system or experiment
 	if (gResFile.size() > 0 && gResFile.compare("###") != 0)
 	{
-		fout_time << "execute TIPS\n";
+		fout_time << "normal ARENA system\n";
 		DealWithPlan();
 	}
-#ifdef ARENA_EXP
 	else
 	{
+		fout_time << "experiment\n";
 		// DealWithPlan();
+		// Adjust the experiments that need to be done
 
-		// 在这里可以进行任何不需要前端和 web 的实验
-		/* 不同算法效率的实验 */
+		/* Exp1 */
 		// ARENATimeExp3();
 		// ARENATimeExp3Random();
 		// ARENATimeExp3Cost();
 
-		/* Group Tree 的过滤性实验 */
+		/* Exp4 */
 		// ARENAGTExp();
 
 		ARENAAosExp();
-		// ARENAFindTargetType();  // 用于寻找特定类型的 plan
 	}
-#endif
 
-#ifdef ARENA_DEBUG
-	time_end = std::chrono::steady_clock::now();  // 计算结束
-	if (fout_time.is_open())					  // 输出时间
+	time_end = std::chrono::steady_clock::now();
+	if (fout_time.is_open())
 	{
-		fout_time << "计算 k alternative plans 花费的时间为："
-				  << (std::chrono::duration_cast<std::chrono::milliseconds>(time_end - time_start)).count()
-				  << "ms\n";
-		fout_time << "*采样与AQPS的工程总共花费的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(time_end - all_start)).count() << '\n';
+		fout_time << "the time of TIPS is :" << (std::chrono::duration_cast<std::chrono::milliseconds>(time_end - time_start)).count() << "ms\n";
+		fout_time << "total time: " << (std::chrono::duration_cast<std::chrono::milliseconds>(time_end - all_start)).count() << '\n';
 	}
 	fout_time.close();
-#endif
-	//************************ARENA**************************/
-
-	// pec->PrintPlanSample();  // ORCA 系统自带的采样结果输出函数，暂时用不到，所以将其关闭以减少 I/O
+	//************************ARENA END**************************/
 }
 
 
@@ -6760,7 +6422,6 @@ CEngine::OsPrint(IOstream &os) const
 }
 
 //************************ARENA**************************/
-// 利用 libcurl 库时，需要利用该函数将 http 请求得到的结果写入全局变量
 size_t writeToConf(char *ptr, size_t size, size_t nmemb, void *userdata){
     char buffer[4096];
     for(size_t i=0;i<nmemb;i++) {
@@ -6769,7 +6430,6 @@ size_t writeToConf(char *ptr, size_t size, size_t nmemb, void *userdata){
     buffer[nmemb] = '\0';
     gConf += buffer;
 
-	// 没用的代码，只是未来通过编译器的检查
 	if(userdata != nullptr){
 		size++;
 		size--;
@@ -6777,9 +6437,9 @@ size_t writeToConf(char *ptr, size_t size, size_t nmemb, void *userdata){
     return nmemb;
 }
 
-// 从 WEB 端取得相应的配置信息
+// get configure information from web server
 bool arenaGetConfig(char mode) {
-	gConf = "";  // 在请求配置信息之前，将配置信息清空
+	gConf = ""; 
 	curl_global_init(CURL_GLOBAL_DEFAULT);
     CURL * handle = curl_easy_init();
 	CURLcode res;
@@ -6787,7 +6447,6 @@ bool arenaGetConfig(char mode) {
     if (handle == nullptr){
         std::exit(1);
     } else {
-        std::cout << "CURL 初始化成功\n";
         curl_mimepart * part;
         curl_mime * mime;
         mime = curl_mime_init(handle);
@@ -6813,21 +6472,14 @@ bool arenaGetConfig(char mode) {
 }
 
 
-// 读取 ARENA 系统的全局配置信息
-// Args:
-//		mode：是 B-APQ 还是 I-APQ，如果是 I-APQ 模式，相关配置信息通过本进程的pid进行标识
+// read the configure information of  ARENA system
 void readConfig(char mode)
 {
-	std::ofstream fout_temp("/tmp/debug");
-	fout_temp << "读取配置信息\n";
-	// 先从 web 端取得相应的信息
-	if(!arenaGetConfig(mode)){  // 不能顺利获取到信息，退出该函数，使用默认参数（可能的原因是没有开启服务器）
+	if(!arenaGetConfig(mode)){  // if wrong, exit
 		return;
 	}
-	fout_temp << "请求配置信息完成\n";
-	fout_temp << gConf << std::endl;
-	gConf = gConf.substr(1);  // 由于第一个字符是 '"' ，所以需要去除
-	// 配置信息的详细格式为 k;s;c;cost;lambda;mode;gtFilterThreshold;targetFileName，并且确保最后一个参数一定是目标文件名。下面进行解析
+	gConf = gConf.substr(1);
+	
 	size_t  index = 0;
 	size_t  pre = 0;
 	int i= 1;
@@ -6837,7 +6489,6 @@ void readConfig(char mode)
 		pre = index+1;
 		index = gConf.find(';', pre);
 
-		fout_temp << s << '\n';
 		switch(i){
 			case 1:
 				gARENAK = std::stoi(s);
@@ -6868,105 +6519,17 @@ void readConfig(char mode)
 				break;
 		}
 	}
-	// 最后一定是最终结果的文件名
 	index = gConf.find('"', pre);
 	gResFile = gConf.substr(pre, index-pre);
-	fout_temp << gResFile << std::endl;
-	fout_temp.close();
 }
 
-
-// 利用中序遍历来获得相应的信息，其节点类型有以下几种可能，对不同的操作符采用不同的处理方式：
-//		CScalarBoolOp: 标量 bool 运算符 ->  ( , 左孩子，根节点，有孩子，)
-//		CScalarCmp: 标量比较运算符 -> 左孩子，根节点，右孩子
-//		CScalarCast: 不太清楚其具体用法，当前理解为重命名运算符  -> 寻找子节点
-//		CScalarIdent: 标量列标识符 -> 当前节点的名称
-//		CScalarConst: 标量常量运算符 -> 当前节点的名称
-//		other: 其它未知的情况 -> 操作符的名称
-void ARENAGetIndexInfo(CExpression * exp, IOstream &os){
-	const char *name_start = exp->Pop()->SzId();
-	if (strcmp(name_start, "CScalarBoolOp") == 0){ 
-		switch(exp->Arity()){
-			case 2:
-				os << "( ";
-				ARENAGetIndexInfo((*exp)[0], os);
-				os << "  ";
-				exp->Pop()->OsPrint(os);
-				os << "  ";
-				ARENAGetIndexInfo((*exp)[1], os);
-				os << ") ";
-				return;
-			case 1:
-				os << "( ";
-				exp->Pop()->OsPrint(os);
-				os << "  ";
-				ARENAGetIndexInfo((*exp)[0], os);
-				os << ") ";
-				return;
-			default:
-				os << "CScalarBoolOp 具有" << exp->Arity() << "个孩子节点，返回";
-				return;
-		}
-	} else if (strcmp(name_start, "CScalarCmp") == 0) {
-		switch(exp->Arity()){
-			case 2:
-				ARENAGetIndexInfo((*exp)[0], os);
-				os << " ";
-				exp->Pop()->OsPrint(os);
-				os << " ";
-				ARENAGetIndexInfo((*exp)[1], os);
-				return;
-			default:
-				os << "CScalarCmp 具有" << exp->Arity() << "个孩子节点，返回";
-				return;
-		}
-	} else if (strcmp(name_start, "CScalarCast") == 0) {
-		switch(exp->Arity()){
-			case 1:
-				ARENAGetIndexInfo((*exp)[0], os);
-				return;
-			default:
-				os << "CScalarCast 具有" << exp->Arity() << "个孩子节点，返回";
-				return;
-		}
-	} else if (strcmp(name_start, "CScalarIdent") == 0) {
-		exp->Pop()->OsPrint(os);
-		return;
-	} else if (strcmp(name_start, "CScalarConst") == 0) {
-		exp->Pop()->OsPrint(os);
-		return;
-	} else {
-		os << "未识别的操作符：" << name_start;
-		return;
-	}
-}
-
-
-// 计算最终结果的MaxMin值，用于 debug
-double calculateMaxMin(std::vector<int> & res)
-{
-	double dist = DBL_MAX;
-	double temp = 0.0;
-	for(std::size_t i=0;i<res.size();++i)
-	{
-		for(std::size_t j=i+1;j<res.size();++j)
-		{
-			temp = plan_trees[res[i]].distance(plan_trees[res[j]]);
-			if (temp < dist)
-				dist = temp;
-		}
-	}
-	return dist;
-}
-
-
+// output the results to a file
 void ARENA_result(std::vector<int> & res)
 {
 	std::string filename = "/tmp/";
 	std::ofstream fout(filename+"ARENA_result");
 	if(fout.is_open())
 	{
-		// fout << calculateMaxMin(res) << std::endl;
 		fout << "[";
 		nlohmann::json j;
 		for (std::size_t i=0;i<res.size();++i)
@@ -6995,7 +6558,6 @@ void ARENA_result(std::vector<int> & res)
 				j["distance"] = s * gSWeight + c * gCWeight + cost * gCostWeight;
 			}
 
-			// j["content"] = plan_trees_hash[res[i]].root->generate_json();
 			fout << j;
 			fout << ",\n";
 		}
@@ -7003,10 +6565,9 @@ void ARENA_result(std::vector<int> & res)
 		fout << "]";
 		fout.close();
 	}
-	// 重置全局变量
+	// reset the global variables
 	std::vector<PlanTreeHash<CExpression>> ().swap(plan_trees_hash);
 	find_index.clear();
-	// plan_trees.clear();
 	new_add = 0;
 	max_cost = 0.0;
 	gARENAK = 5;
@@ -7236,7 +6797,6 @@ void DealWithPlan() {
 	new_add = 0;
 	max_cost = 0.0;
 	counter = 0;
-	bow_flag = false;
 	gARENAK = 5;
 }
 
@@ -7406,7 +6966,6 @@ void FindKRandom() {
 	new_add = 0;
 	max_cost = 0.0;
 	counter = 0;
-	bow_flag = false;
 	gARENAK = 5;
 }
 
@@ -7540,244 +7099,7 @@ void FindKCost() {
 	new_add = 0;
 	max_cost = 0.0;
 	counter = 0;
-	bow_flag = false;
 	gARENAK = 5;
-}
-
-void ARENATimeExp1() {
-	plan_trees_hash.reserve(plan_buffer.size());
-	std::ofstream fout_time("/home/wang/timeRecord.txt");
-	if (fout_time.is_open())
-	{
-		for (int tempPlanNum = 1000; tempPlanNum < 11000; tempPlanNum += 1000)
-		{
-			fout_time << "\n当前测试的 plan 数量为：" << tempPlanNum << '\n';
-			auto start = std::chrono::steady_clock::now();
-			auto startAll = start;
-			// 初始化的第零阶段，生成 plan_tree 结构
-			for (int i = 0; i < tempPlanNum; i++)
-			{
-				plan_trees_hash.push_back(PlanTreeHash<CExpression>());
-				plan_trees_hash[i].init(plan_buffer_for_exp[i], 0);
-
-				// 设置 cost 的最大值
-				if (plan_trees_hash[i].root->data.cost > max_cost)
-				{
-					max_cost = plan_trees_hash[i].root->data.cost;
-				}
-			}
-			fout_time << "第一阶段(初始化PlanTreeNode结构体)初始计划的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第一阶段，生成一棵树的所有统计信息
-			for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init1
-			{
-				plan_trees_hash[i].init(NULL, 1);
-			}
-			fout_time << "    生成子树统计信息的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第二阶段，生成节点内容组成的字符串，用于计算内容差异
-			for (std::size_t i = 0; i < plan_trees_hash.size(); i++)
-			{
-				plan_trees_hash[i].init(NULL, 2);
-			}
-			fout_time << "    *取得由节点内容组成的字符串的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第三阶段，计算自己与自己的树核
-			for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init3
-			{
-				plan_trees_hash[i].init(NULL, 3);
-			}
-			fout_time << "    计算与自己的距离的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			max_cost -= plan_trees_hash[0].root->data.cost;
-			
-
-			// 当使用新方法时，需要用有限队列的形式存储 distance
-			std::priority_queue<MinDist> dist_record;
-			// 初始化的最终阶段，计算每个 plan 与 best_plan 的结构差异、内容差异和cost差异
-			// 这个代码块用来计算 relevance
-			{
-				double temp_dist;
-				for (std::size_t i = 1; i < plan_trees_hash.size(); ++i)
-				{
-					temp_dist = plan_trees_hash[i].distance_with_best(plan_trees_hash[0]);
-					MinDist temp;
-					temp.index = i;
-					temp.dist = temp_dist;
-					dist_record.push(temp);
-				}
-			}
-			
-			// // 当使用旧方法时，则用 hash 表存储 distance
-            // std::unordered_map<int, double> dist_record;
-			// for(std::size_t i=1;i<plan_trees_hash.size();++i)
-			// {
-			// 	double temp_dist = plan_trees_hash[i].distance_with_best(plan_trees[0]);
-			// 	dist_record[i] = temp_dist;
-			// }
-
-			// 统计寻找最终结果所用时间
-			fout_time << "*计算每个计划与最优计划距离的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			std::vector<int> res;
-			FindKTimeExpNew(plan_trees_hash, res, dist_record);
-			fout_time << "*查找k个目标值的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			fout_time << "最终找到结果的编号为: " << '\n';
-			for(auto i: res){
-				fout_time << i << '\t';
-			}
-			fout_time << '\n';
-
-			// ARENA_result(res);  // 将结果保留到文件中
-			fout_time << "*程序整体的执行时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startAll)).count() << std::endl;
-
-			// 重置全局变量
-			plan_trees_hash.clear();
-			new_add = 0;
-			max_cost = 0.0;
-		}
-
-		fout_time.close();
-	}
-}
-
-void ARENATimeExp2() {
-	plan_trees.reserve(plan_buffer.size());
-	std::ofstream fout_time("/home/wang/timeRecord.txt");
-	if (fout_time.is_open())
-	{
-		for (int tempPlanNum = 1000; tempPlanNum < 11000; tempPlanNum += 1000)
-		{
-			fout_time << "\n当前测试的 plan 数量为：" << tempPlanNum << '\n';
-			auto start = std::chrono::steady_clock::now();
-			auto startAll = start;
-			// 初始化的第一阶段，生成 plan_tree 结构
-			for (int i = 0; i < tempPlanNum; i++)
-			{
-				plan_trees.push_back(PlanTree<CExpression>());
-				plan_trees[i].init(plan_buffer_for_exp[i], 0);
-
-				// 设置 cost 的最大值
-				if (plan_trees[i].root->data.cost > max_cost)
-				{
-					max_cost = plan_trees[i].root->data.cost;
-				}
-			}
-			fout_time << "第一阶段(初始化PlanTreeNode结构体)初始计划的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第二阶段，对一棵树进行序列化，用于之后计算后缀树
-			for(std::size_t i=0;i<plan_trees.size();i++)  // init1
-			{
-				plan_trees[i].init(NULL, 1);
-			}
-			fout_time << "    生成字符串的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第四阶段，初始化后缀树的上下文
-			for(std::size_t i=0;i<plan_trees.size();i++)  // init3
-			{
-				plan_trees[i].init(NULL, 3);
-			}
-			fout_time << "    初始化上下文的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第五阶段，构造后缀树
-			for(std::size_t i=0;i<plan_trees.size();i++)  // init4
-			{
-				plan_trees[i].init(NULL, 4);
-			}
-			fout_time << "    构造后缀树的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第六阶段，收尾工作1，计算每个节点的叶子节点的数量
-			for(std::size_t i=0;i<plan_trees.size();i++)  // init5
-			{
-				plan_trees[i].init(NULL, 5);
-			}
-			fout_time << "    收尾工作1(计算节点数量)的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第七阶段，收尾工作2，计算与自己的距离
-			for(std::size_t i=0;i<plan_trees.size();i++)  // init6
-			{
-				plan_trees[i].init(NULL, 6);
-			}
-			fout_time << "    收尾工作2(计算与自己的距离)的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()- start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第八阶段，对后缀树进行剪枝
-			for(std::size_t i=0;i<plan_trees.size();i++)  // init7
-			{
-				plan_trees[i].init(NULL, 7);
-			}
-			fout_time << "    剪枝所需的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第三阶段，生成节点内容组成的字符串，用于计算内容差异
-			for (std::size_t i = 0; i < plan_trees.size(); i++)
-			{
-				plan_trees[i].init(NULL, 2);
-			}
-			fout_time << "*第三阶段(取得由节点内容组成的字符串)初始计划的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			max_cost -= plan_trees[0].root->data.cost;
-			
-			// 初始化的最终阶段，计算每个 plan 与 best_plan 的结构差异、内容差异和cost差异
-
-			// 当使用新方法时，需要用有限队列的形式存储 distance
-			std::priority_queue<MinDist> dist_record;
-			// 这个代码块用来计算 relevance
-			{
-				double temp_dist;
-				for (std::size_t i = 1; i < plan_trees.size(); ++i)
-				{
-					temp_dist = plan_trees[i].distance_with_best(plan_trees[0]);
-					MinDist temp;
-					temp.index = i;
-					temp.dist = temp_dist;
-					dist_record.push(temp);
-				}
-			}
-			
-			// // 当使用旧方法时，则用 hash 表存储 distance
-            // std::unordered_map<int, double> dist_record;
-			// for(std::size_t i=1;i<plan_trees.size();++i)
-			// {
-			// 	double temp_dist = plan_trees[i].distance_with_best(plan_trees[0]);
-			// 	dist_record[i] = temp_dist;
-			// }
-
-			// 统计寻找最终结果所用时间
-			fout_time << "*计算每个计划与最优计划距离的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			std::vector<int> res;
-			FindKTimeExpNew(plan_trees, res, dist_record);
-			fout_time << "*查找k个目标值的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			fout_time << "最终找到结果的编号为：" << '\n';
-			for(auto i: res){
-				fout_time << i << '\t';
-			}
-			fout_time << '\n';
-
-			// ARENA_result(res);  // 将结果保留到文件中
-			fout_time << "*程序整体的执行时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startAll)).count() << std::endl;
-
-			// 重置全局变量
-			plan_trees.clear();
-			new_add = 0;
-			max_cost = 0.0;
-		}
-
-		fout_time.close();
-	}
 }
 
 // 测试不同方法（随机选择、基于 cost 选择等方法）再选择相同数量的 AP 
@@ -8416,70 +7738,6 @@ void ARENAAosExp()
 			// 		ARENAOutputExp(i, fout_time);
 			// 	}
 			// }
-		}
-		fout_time.close();
-	}
-}
-
-// 用于寻找特定类型的 plan
-// 当前寻找的是 与 QEP 结构相同，但是 Cost 差异却非常大的 plan
-void ARENAFindTargetType()
-{
-	plan_trees_hash.reserve(plan_buffer.size());
-	std::ofstream fout_time("/home/wang/timeRecord.txt");
-	if (fout_time.is_open())
-	{
-		auto start = std::chrono::steady_clock::now();
-
-		for (std::size_t i = 0; i < plan_buffer_for_exp.size(); i++)
-		{
-			plan_trees_hash.emplace_back(PlanTreeHash<CExpression>());
-			plan_trees_hash[i].init(plan_buffer_for_exp[i], 0);
-			plan_trees_hash[i].init(nullptr, 1);
-
-			// 设置 cost 的最大值
-			if (plan_trees_hash[i].root->data.cost > max_cost)
-			{
-				max_cost = plan_trees_hash[i].root->data.cost;
-			}
-		}
-		fout_time << "第一阶段(初始化PlanTreeNode结构体)初始计划的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-		start = std::chrono::steady_clock::now();
-
-		// 初始化第二阶段，生成节点内容组成的字符串，用于计算内容差异
-		for (std::size_t i = 0; i < plan_trees_hash.size(); i++)
-		{
-			plan_trees_hash[i].init(NULL, 2);
-		}
-		fout_time << "取得由节点内容组成的字符串的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-		start = std::chrono::steady_clock::now();
-
-		// 初始化第三阶段，计算自己与自己的树核
-		for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init3
-		{
-			plan_trees_hash[i].init(NULL, 3);
-		}
-		fout_time << "计算与自己的距离的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-		start = std::chrono::steady_clock::now();
-
-		auto maxCostRecord = max_cost;
-		max_cost -= plan_trees_hash[0].root->data.cost;
-		
-		// 当使用新方法时，需要用优先队列的形式存储 distance
-		// 初始化的最终阶段，计算每个 plan 与 best_plan 的结构差异、内容差异和cost差异
-		{
-			double temp_dist;
-			for (std::size_t i = 1; i < plan_trees_hash.size(); ++i)
-			{
-				temp_dist = plan_trees_hash[i].structure_dist(plan_trees_hash[0]);
-				if(temp_dist == 0.0)
-				{
-					if((maxCostRecord - plan_trees_hash[i].get_cost())/maxCostRecord < 0.1)
-					{
-						fout_time << "*找到目标值: " << i;
-					}
-				}
-			}
 		}
 		fout_time.close();
 	}
