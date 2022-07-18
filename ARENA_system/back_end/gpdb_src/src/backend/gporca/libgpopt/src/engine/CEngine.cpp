@@ -1854,30 +1854,27 @@ public:
 
 
 template <class T>
-struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
+struct PlanTreeHash  // use hash table to calculate the structure difference
 {
 	using json = nlohmann::json;
 
-	// 与 best_plan 的结构和cost的偏离程度。也可以理解为某个 plan 的价值。当前我们认为 cost 差异越大，结构和内容差异越小，价值越大
+	// reference
 	double offset;
 
 	PlanTreeNode *root;
 	bool init_flag;
-	std::vector<std::string*> str_of_node;  // 节点内容构成的字符串，用于度量内容之间的差异
-	// 这两个属性均与 treeEditDist 有关，使用其它方法时不需考虑
+	std::vector<std::string*> str_of_node;  // used to calculate the content difference(edit distance)
+	
 	std::string json_str;
 	std::string str_serialize;
 	int node_num;
 	double cost_log;
-	double s_dist_best, c_dist_best, cost_dist_best;  // 与 best_plan 之间的各种距离
-	double self_kernel;  // 用于对结构距离进行归一化
-	T * inOriginal;  // 指向原对象的指针
+	double s_dist_best, c_dist_best, cost_dist_best;  // difference with qep
+	double self_kernel;  // used to normalize subtree kernel
+	T * inOriginal;
 
-	std::unordered_map<std::string, int> subTree;  // 记录所有的子树以及各个子树出现的个数，用于计算结构距离
+	std::unordered_map<std::string, int> subTree;
 
-
-	// 返回 expression 中的 name
-	// 如果 name 以 CPhysical 开头，将其删除
 	const char* get_name(T* exp)
 	{
 		if (NULL != exp)
@@ -1886,7 +1883,7 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 			const char * name_start = exp->Pop()->SzId();
 			const char * base_str = "CPhysical";
 
-			if(strlen(name_start) > 9)  // 确保 字符串一定比目标字符串长
+			if(strlen(name_start) > 9)
 			{
 				for(int i=0;i<9;++i)
 				{
@@ -1916,20 +1913,16 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 			return 0.0;
 	}
 
-	// 返回当前树的总 cost ，即根节点的 cost
 	double get_cost(){
 		return root->data.cost;
 	}
 
-	// 插入子节点，该函数相比于下面的 insert_child_detaild 函数，对每个节点增加了更多的判断
-	// 同时也向每个节点中插入了更多的信息，便于前端进行展示
 	void insert_child_detailed(T* child_expression, PlanTreeNode& parent)
 	{
 		if (NULL != child_expression)
 		{
 			PlanTreeNode* cur = NULL;
 
-			// 检查这个操作是否为 CPhysical 操作，因为这个操作，所以 PlanTree 不再适用于其它类型
 #ifdef ARENA_PHYSICAL
 			if (child_expression->Pop()->FPhysical())  // CExpression* -> Coperator* -> bool
 			{
@@ -1939,11 +1932,9 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 				parent.push_back(cur);
 				int name_len = strlen(expression_name);
 
-				// 需要检查名字是否是 Scan 类型，如果是，需要获得 relation 的名字
-				// 字符串长度大于4，并且最后四个字母是 Scan，需要取得表名
 				if (name_len > 4 && !strcmp(expression_name + name_len - 4, "Scan"))
 				{
-					cur->data.tag = "SCAN";  // 节点的标签为: 扫描操作符
+					cur->data.tag = "SCAN";
 					gpos::ARENAIOstream table_name;
 					child_expression->Pop()->OsPrint(table_name);
 					std::string temp = table_name.ss.str();
@@ -1957,7 +1948,7 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 						PlanTreeNode * table = new PlanTreeNode(NodeData(0.0, temp.substr(start, end-start), "TABLE"));
 						cur->push_back(table);
 					}
-				} else if(name_len > 4 && !strcmp(expression_name + name_len -4, "Join"))  // Join 操作符，设置 JOIN 标签
+				} else if(name_len > 4 && !strcmp(expression_name + name_len -4, "Join"))
 				{
 					cur->data.tag = "JOIN";
 				}
@@ -1967,15 +1958,13 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 					insert_child_detailed((*child_expression)[i], *cur);
 				}
 
-				// 检查 如果是 Motion 操作节点，并且节点下只有一个子节点，并且该节点的 cost 和 子节点的 cost 相同，则去除该节点
 				const char * motionOp = "Motion";
 				if (cur->data.name.size() > 6 && cur->data.name.compare(0, 6, motionOp) == 0 && cur->size() == 1 && 
-					cur->data.cost - (*cur)[0]->data.cost < 0.1 * cur->data.cost )  // 该节点与子节点的 cost 差异很小
+					cur->data.cost - (*cur)[0]->data.cost < 0.1 * cur->data.cost )
 				{
-					// 将当前节点从父节点中去除并将子节点移入到父节点的孩子中
 					parent.child[parent.size()-1] = (*cur)[0];
-					// 释放当前节点的内存
-					cur->child[0] = nullptr;  // 析构函数会递归地释放孩子的内存，所以用空指针代替
+					
+					cur->child[0] = nullptr; 
 					delete cur;
 				}
 #ifdef ARENA_PHYSICAL
@@ -1990,7 +1979,6 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 		{
 			PlanTreeNode* cur = NULL;
 
-			// 检查这个操作是否为 CPhysical 操作，因为这个操作，所以 PlanTree 不再适用于其它类型
 #ifdef ARENA_PHYSICAL
 			if (child_expression->Pop()->FPhysical())  // CExpression* -> Coperator* -> bool
 			{
@@ -2000,11 +1988,9 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 				parent.push_back(cur);
 				int name_len = strlen(expression_name);
 
-				// 需要检查名字是否是 Scan 类型，如果是，需要获得 relation 的名字
-				// 字符串长度大于4，并且最后四个字母是 Scan，需要取得表名
 				if (name_len > 4 && !strcmp(expression_name + name_len - 4, "Scan"))
 				{
-					cur->data.tag = "SCAN";  // 节点的标签为: 扫描操作符
+					cur->data.tag = "SCAN";
 					gpos::ARENAIOstream table_name;
 					child_expression->Pop()->OsPrint(table_name);
 					std::string temp = table_name.ss.str();
@@ -2043,11 +2029,9 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 			delete root;
 	}
 
-	// 用于生成由节点内容组成的字符串
-	// 用于计算编辑距离
 	void getNodeStr()
 	{
-		std::queue<PlanTreeNode*> node_queue;  // 采用层序遍历的方式来生成节点的内容
+		std::queue<PlanTreeNode*> node_queue;
 		PlanTreeNode* current_node = NULL;
 		node_queue.push(root);
 		while (!node_queue.empty())
@@ -2055,7 +2039,6 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 			current_node = node_queue.front();
 
 			str_of_node.push_back(&(current_node->data.name));
-			// 将所有孩子节点加入到队列节点
 			for (std::size_t i = 0; i < current_node->child.size(); ++i)
 			{
 				node_queue.push(current_node->child[i]);
@@ -2064,14 +2047,12 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 		}
 	}
 
-	// 该函数相比于下面两个函数，它会在根节点进行更多的判断，用于最终的结果展示
 	void init_detailed(T* plan)
 	{
 		if (NULL != plan)
 		{
-			inOriginal = plan;  // 记录该指针，便于后面调用 init_detailed
+			inOriginal = plan;
 			root = new PlanTreeNode(NodeData(get_cost(plan), get_name(plan)));
-			// 如果节点是 表扫描操作 或者是 连接操作，设置 node 的 tag
 			if (root->data.name.size() > 4)
 			{
 				std::size_t compareStart = root->data.name.size() - 4;
@@ -2084,20 +2065,16 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 				}
 			}
 
-			// 添加子节点
 			for (std::size_t i = 0; i < plan->Arity(); ++i)
 			{
 				insert_child_detailed((*plan)[i], *root);
 			}
 
-			// 检测节点是否是 Motion 节点，如果是，删除
 			if (root->data.name.size() > 6 && root->data.name.compare(0, 6, "Motion") == 0 && root->size() == 1 && 
-				root->data.cost - (*root)[0]->data.cost < 0.1 * root->data.cost )  // 该节点与子节点的 cost 差异很小
+				root->data.cost - (*root)[0]->data.cost < 0.1 * root->data.cost )
 			{
-				// 临时存储子节点的地址
 				auto temp = (*root)[0];
-				// 释放当前节点的内存
-				root->child[0] = nullptr;  // 析构函数会递归地释放孩子的内存，所以用空指针代替
+				root->child[0] = nullptr;
 				delete root;
 				root = temp;
 			}
@@ -2112,13 +2089,12 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 		init(nullptr, 3);
 	}
 
-	void init(T* plan, int flag)  // 与上述 init 函数的功能相同，但是该函数中将各个部分进行了拆分，用于测试不同初始化的时间
+	void init(T* plan, int flag)
 	{
 		if (flag == 0 && NULL != plan)
 		{
-			inOriginal = plan;  // 记录该指针，便于后面调用 init_detailed
+			inOriginal = plan;
 			root = new PlanTreeNode(NodeData(get_cost(plan), get_name(plan)));
-			// 添加子节点
 			for (std::size_t i = 0; i < plan->Arity(); ++i)
 			{
 				insert_child((*plan)[i], *root);
@@ -2128,32 +2104,27 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 		init_flag = true;
 		if (flag == 1)
 		{
-			// 生成子树统计信息
 			str_serialize = postOrder(root);
 		}
 		else if (flag == 2)
 		{
-			// 将树转变为字符串，用于计算内容差异
 			getNodeStr();
 		}
 		else if (flag == 3)
 		{
-			// 计算自己与自己的树核信息
 			structure_dist_self();
 
-			if(gTEDFlag)  // 如果需要使用 TreeEdit 距离
+			if(gTEDFlag)
 			{
 				TED_json();
 			}
 		}
 		else if (flag == 4)
 		{
-			// 计算在利用后缀树时，单单生成序列化的树所需要的时间
 			str_serialize = postOrderNone(root);
 		}
 		else if (flag == 5)
 		{
-			// 计算遍历所有字符所需要的时间
 			std::unordered_map<int, int> temp;
 			for(std::size_t i=0;i<str_serialize.size();i++)
 			{
@@ -2169,7 +2140,7 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 		}
 
 		std::string treeStr;
-		if (root->size() == 0) {  // 叶子节点
+		if (root->size() == 0) {
 			treeStr = "[]";
 		}
 		else
@@ -2201,7 +2172,7 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 		}
 
 		std::string treeStr;
-		if (root->size() == 0) {  // 叶子节点
+		if (root->size() == 0) {
 			treeStr = "[]";
 		}
 		else
@@ -2219,33 +2190,25 @@ struct PlanTreeHash  // 利用 hash 表计算结构距离的 PlanTree
 
 
 public:
-	//****************** 距离相关的一些函数 ********************************/
-	// 计算两棵树之间的距离
+	//****************** function about difference ********************************/
 	double distance(PlanTreeHash& other)
 	{
-		// double s_dist = context.distance(other.context);  // 结构的距离
 		double s_dist = structure_dist(other);
-		double c_dist = editDist(str_of_node, other.str_of_node);  // 内容的距离
+		double c_dist = editDist(str_of_node, other.str_of_node);
 		double cost = cost_dist(other);
 		return (1-gLambda)*(offset + other.offset) / 2 +gLambda * (s_dist * gSWeight + c_dist * gCWeight + cost * gCostWeight);
 	}
 
 	double distance_with_best(PlanTreeHash &other)
 	{
-		// double s_dist = context.distance(other.context);  // 结构的距离
 		double s_dist = structure_dist(other);
-		double c_dist = editDist(str_of_node, other.str_of_node);  // 内容的距离
+		double c_dist = editDist(str_of_node, other.str_of_node);
 		double cost = cost_dist(other);
 
 		s_dist_best = s_dist;
 		c_dist_best = c_dist;
 		cost_dist_best = cost;
-		// offset = abs(0.5*(s_dist+c_dist) - cost);  // 原本的价值评定方式：cost 和 结构以及内容的偏离程度
-		// offset = (cost - (s_dist+c_dist) + 1) / 2.0;  // 新的价值评定：cost 与 (s_dist+c_dist) 的差值，值越大，价值越高，+1 与 /2 是为了保证其范围是 [0, 1]
-		// 利用拟合后的函数作为价值函数，如果值小于0，置为0
-		// double a[7]{0.4974,   0.4232,   1.4671,   0.2306,  -1.7610,  -1.3291,   0.7043};
 		double a[7]{1.0000,    1.0000,    1.0000,   -1.0000,   -2.0000,   -2.0000,    2.0000};
-		// offset = a[0]*std::pow(s_dist, 3)+ a[1]*std::pow(c_dist, 3)+a[2]*std::pow(cost, 3)+a[3]*s_dist*c_dist+a[4]*s_dist*cost+a[5]*c_dist*cost+a[6]*s_dist*c_dist*cost;
 		offset = a[0]*s_dist+ a[1]*c_dist+a[2]*cost+a[3]*s_dist*c_dist+a[4]*s_dist*cost+a[5]*c_dist*cost+a[6]*s_dist*c_dist*cost;
 		if(offset < 0.0)
 		{
@@ -2255,13 +2218,10 @@ public:
 		return (1-gLambda)*offset +gLambda * (s_dist * gSWeight + c_dist * gCWeight + cost * gCostWeight);
 	}
 
-	// 返回两者之间结构的差距
-	// 当前使用的方法是将子树转换为字符串，寻找相同字符串的个数
 	double structure_dist(PlanTreeHash& other)
 	{
 		int res = 0;
 		
-		// 找到比较小的记录
 		std::unordered_map<std::string, int> * small, *large;
 		if (subTree.size() < other.subTree.size()){
 			small = &subTree;
@@ -2271,16 +2231,14 @@ public:
 			large = &subTree;
 		}
 
-		// 找到两棵树的公共子树，并计算相应的乘积
 		for (auto iter=small->begin(); iter != small->end() ; iter++){
 			const std::string & key = iter->first;
 			auto iter2 = large->find(key);
-			if (iter2 != large->end()) {  // 存在公共子串
+			if (iter2 != large->end()) {
 				res += iter->second * iter2->second;
 			}
 		}
 
-		// 计算结构距离 : 
 		double temp  = sqrt(self_kernel * other.self_kernel);
 		temp = (double)(res) / temp;
 
@@ -2288,20 +2246,17 @@ public:
 		{
 			return sqrt(1.0 - temp);
 		}
-		else  // 使用 tree edit 距离
+		else
 		{
 			TreeEdit te;
-			return te(json_str, other.json_str, node_num, other.node_num);  // s_dist 同时包含结构的差异与内容的差异
+			return te(json_str, other.json_str, node_num, other.node_num);
 		}
 	}
 
-	// 该函数可以计算 PlanTreeHash 类型的对象与 gtTree 类型的对象
-	// 之间的结构距离，主要用于根据 Group Tree 对 plan 进行剪枝
 	double structure_dist(gtTree& other)
 	{
 		int res = 0;
 		
-		// 找到比较小的记录
 		std::unordered_map<std::string, int> * small, *large;
 		if (subTree.size() < other.inSubtreeInfo.size()){
 			small = &subTree;
@@ -2311,16 +2266,14 @@ public:
 			large = &subTree;
 		}
 
-		// 找到两棵树的公共子树，并计算相应的乘积
 		for (auto iter=small->begin(); iter != small->end() ; iter++){
 			const std::string & key = iter->first;
 			auto iter2 = large->find(key);
-			if (iter2 != large->end()) {  // 存在公共子串
+			if (iter2 != large->end()) {
 				res += iter->second * iter2->second;
 			}
 		}
 
-		// 计算结构距离 : 
 		double temp  = sqrt(self_kernel * other.inSelfKernel);
 		temp = (double)(res) / temp;
 		return sqrt(1.0 - temp);
@@ -2330,86 +2283,58 @@ public:
 	{
 		int res = 0;
 		
-		// // 找到比较小的记录
 		std::unordered_map<std::string, int> * small;
 		small = &subTree;
 
-		// 找到两棵树的公共子树，并计算相应的乘积
 		for (auto iter=small->begin(); iter != small->end() ; iter++){
 			res += iter->second * iter->second;
 		}
 
-		// 比较慢的方法
-		// for(auto iter=subTree.begin(); iter!= subTree.end();iter++)
-		// {
-		// 	const std::string & key = iter->first;
-		// 	auto iter2 = subTree.find(key);
-		// 	if (iter2 != subTree.end()) {  // 存在公共子串
-		// 		res += iter->second * iter2->second;
-		// 	}
-		// }
 		self_kernel = res;
 	}
 
-	// 返回两者之间内容的差距
 	double content_dist(PlanTreeHash& other)
 	{
 		return editDist(str_of_node, other.str_of_node);
 	}
 
-	// 普通版本的 content distance，即不进行归一化
 	int content_distG(PlanTreeHash& other)
 	{
 		return editDistG(str_of_node, other.str_of_node);
 	}
 
-	// 返回两者之间 cost 的差异
 	double cost_dist(PlanTreeHash& other)
 	{
-		double res = abs(root->data.cost - other.root->data.cost) / max_cost;  // 没有取 log 的 cost 差异
-		// double res = abs(cost_log - other.cost_log) / max_cost;  // 对 cost 取log，再计算差异
+		double res = abs(root->data.cost - other.root->data.cost) / max_cost; 
 		return res;
 	}
 
-	// 生成用于计算 tree edit dist 的 json 格式的字符串
 	void TED_json()
 	{
 		json_str = "{\"root\":";
 		node_num = 0;
-		root->ted_json(json_str, &node_num);  // 传递 node_num 不仅可以对 节点数量进行计数，还能用于标注 id
+		root->ted_json(json_str, &node_num);
 		json_str += "}";
-
-		// 用于调试
-		// std::ofstream fout("/tmp/json_temp");
-		// if (fout.is_open())
-		// {
-		// 	fout << json_str << std::endl;
-		// 	fout << node_num;
-		// 	fout.close();
-		// }
 	}
-	//*****************************************************************/
 
-	// 输出表达式的内容
 	void write(std::ostream &out)
 	{
 		if (NULL != root)
 			root->output(out);
 	}
 
-	// 以 json 的格式输出表达式的内容
 	void write_json(std::ostream &out)
 	{
 		if (NULL != root)
 			root->output_json(out);
 	}
 };
-// 利用 Group Tree 进行过滤的算法
+
+// GFP strategy
 void ARENAGTFilter(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep, std::unordered_map<int, CCost>* id2Cost);
-// 利用 AOS 策略将结构相同的 plan 加入到采样之中
+// LAPS strategy
 void ARENAAos(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep);
 
-/******************** ARENA EXP ********************/
 int getIndex(char c)
 {
 	switch (c)
@@ -2421,7 +2346,6 @@ int getIndex(char c)
 	case '$':
 		return 2;
 	default:
-		std::cerr << "出现了特殊字符 " << c << '\n';
 		return 2;
 	}
 }
@@ -2444,19 +2368,18 @@ void node::preOrder(int prefix, std::string& s, std::ostream& fout)
 			continue;
 		}
 
-		// 打印前缀
 		for (int j = 0; j < prefix; j++)
 		{
 			fout << ' ';
 		}
-		// 打印边上的信息
+
 		edge* e = m_pEdgeVector[i];
 		for (int j = e->m_startIndex; j < e->m_endIndex; j++)
 		{
 			fout << s[j];
 		}
 		fout << '\n';
-		// 打印子节点
+
 		e->m_pEndNode->preOrder(prefix + 4, s, fout);
 	}
 }
@@ -2494,14 +2417,11 @@ void suffixTreeNew::construct()
 		m_remainder++;
 		char c = m_originalStr[i];
 		int index = getIndex(c);
-		// 根据 m_activate 的情况进行相应的处理
-		// 最简单的情况，当前在根节点并且原来没有相应的字符
+
 		if (m_activate.m_pNode->m_isRoot && m_activate.m_edgePrefix == '\0')
 		{
-			// 原来没有相应的字符
 			if (m_activate.m_pNode->m_pEdgeVector[index] == nullptr)
 			{
-				// 直接加入新的边和节点
 				edge* e = new edge();
 				node* tempNode = new node();
 				e->m_pStartNode = m_activate.m_pNode;
@@ -2511,34 +2431,28 @@ void suffixTreeNew::construct()
 				m_activate.m_pNode->m_pEdgeVector[index] = e;
 				m_remainder--;
 			}
-			else // 原来有相应的字符
+			else
 			{
 				m_activate.m_edgePrefix = c;
 				m_activate.m_len = 1;
 			}
 		} 
-		// 当前是根节点，但是活动边不是空字符 (m_activate.m_edgePrefix != 0)
+	
 		else if(m_activate.m_pNode->m_isRoot && m_activate.m_edgePrefix != '\0')
 		{
-			// 检查是新字符还是已有字符
 			int subIndex = getIndex(m_activate.m_edgePrefix);
 			edge* e = m_activate.m_pNode->m_pEdgeVector[subIndex];
-			// 检查这条边上的下一个字符（！！！！！！！！可能存在的结果是下面已经进行了分裂，当前没有考虑）
-			// 当长度大于这条边上的字符个数时
 			if (m_activate.m_len >= e->size())
 			{
-				// 它一定是一个一个增加的，极限情况就是 == 的情况，判断是否存在该字符引出的边
 				node* tempNode = e->m_pEndNode;
 				if (tempNode->m_pEdgeVector[index] != nullptr)
 				{
-					// 更新活动节点
 					m_activate.m_pNode = tempNode;
 					m_activate.m_edgePrefix = c;
 					m_activate.m_len = 1;
 				}
 				else
 				{
-					// 分裂边
 					bool isNext = true;
 					node* pre = nullptr;
 					do
@@ -2548,15 +2462,13 @@ void suffixTreeNew::construct()
 				}
 			}
 			else
-				// 还能在原来边上继续增加
 			{
-				char subC = m_originalStr[e->m_startIndex + m_activate.m_len];  // 取得这条边上的下一个字符，并于接下来的字符比较
+				char subC = m_originalStr[e->m_startIndex + m_activate.m_len];
 				if (c == subC)
 				{
-					// 继续增加 activate_length 和 remainder
 					m_activate.m_len++;
 				}
-				else  // 不相等，递归地处理各个activate point直到为 remainder 为0，或者有相同的后缀
+				else
 				{
 					bool isNext = true;
 					node* pre = nullptr;
@@ -2567,25 +2479,21 @@ void suffixTreeNew::construct()
 				}
 			}
 		}
-		// 活动节点不是根节点
 		else if (!m_activate.m_pNode->m_isRoot)
 		{
 			int subIndex = getIndex(m_activate.m_edgePrefix);
 			edge* e = m_activate.m_pNode->m_pEdgeVector[subIndex];
 			if (m_activate.m_len >= e->size())
 			{
-				// 它一定是一个一个增加的，极限情况就是 == 的情况，判断是否存在该字符引出的边
 				node* tempNode = e->m_pEndNode;
 				if (tempNode->m_pEdgeVector[index] != nullptr)
 				{
-					// 更新活动节点
 					m_activate.m_pNode = tempNode;
 					m_activate.m_edgePrefix = c;
 					m_activate.m_len = 1;
 				}
 				else
 				{
-					// 分裂边
 					bool isNext = true;
 					node* pre = nullptr;
 					do
@@ -2595,15 +2503,13 @@ void suffixTreeNew::construct()
 				}
 			}
 			else
-				// 还能在原来边上继续增加
 			{
-				char subC = m_originalStr[e->m_startIndex + m_activate.m_len];  // 取得这条边上的下一个字符，并于接下来的字符比较
+				char subC = m_originalStr[e->m_startIndex + m_activate.m_len];
 				if (c == subC)
 				{
-					// 继续增加 activate_length 和 remainder
 					m_activate.m_len++;
 				}
-				else  // 不相等，递归地处理各个activate point直到为 remainder 为0，或者有相同的后缀
+				else
 				{
 					bool isNext = true;
 					node* pre = nullptr;
@@ -2623,10 +2529,8 @@ bool suffixTreeNew::onePoint(std::size_t currIndex, node* preNode)
 	int index = getIndex(c);
 	if (m_activate.m_pNode->m_isRoot && m_activate.m_edgePrefix == '\0')
 	{
-		// 原来没有相应的字符
 		if (m_activate.m_pNode->m_pEdgeVector[index] == nullptr)
 		{
-			// 直接加入新的边和节点
 			edge* e = new edge();
 			node* tempNode = new node();
 			e->m_pStartNode = m_activate.m_pNode;
@@ -2636,7 +2540,7 @@ bool suffixTreeNew::onePoint(std::size_t currIndex, node* preNode)
 			m_activate.m_pNode->m_pEdgeVector[index] = e;
 			m_remainder--;
 		}
-		else // 原来有相应的字符
+		else
 		{
 			m_activate.m_edgePrefix = c;
 			m_activate.m_len = 1;
@@ -2644,20 +2548,16 @@ bool suffixTreeNew::onePoint(std::size_t currIndex, node* preNode)
 		return false;
 	} 
 
-	// 当前是根节点，但是活动边不是空字符 (m_activate.m_edgePrefix != 0)
 	if(m_activate.m_pNode->m_isRoot && m_activate.m_edgePrefix != '\0')
 	{
-		// 检查是新字符还是已有字符
 		int subIndex = getIndex(m_activate.m_edgePrefix);
 		edge* e = m_activate.m_pNode->m_pEdgeVector[subIndex];
-		// 检查这条边上的下一个字符（！！！！！！！！可能存在的结果是下面已经进行了分裂，当前没有考虑）
+		
 		if (m_activate.m_len >= e->size())
 		{
-			// 它一定是一个一个增加的，极限情况就是 == 的情况，判断是否存在该字符引出的边
 			node* tempNode = e->m_pEndNode;
 			if (tempNode->m_pEdgeVector[index] != nullptr)
 			{
-				// 更新活动节点
 				m_activate.m_pNode = tempNode;
 				m_activate.m_edgePrefix = c;
 				m_activate.m_len = 1;
@@ -2665,8 +2565,6 @@ bool suffixTreeNew::onePoint(std::size_t currIndex, node* preNode)
 			}
 			else
 			{
-				// 分裂边
-				// 将原来的边分为两部分
 				node* subNode = e->m_pEndNode;
 				e->m_pEndNode = new node();
 				e->m_endIndex = e->m_startIndex + m_activate.m_len;
@@ -2677,21 +2575,21 @@ bool suffixTreeNew::onePoint(std::size_t currIndex, node* preNode)
 				newEdge->m_pEndNode = subNode;
 				newEdge->m_pStartNode = e->m_pEndNode;
 				e->m_pEndNode->m_pEdgeVector[getIndex(m_originalStr[newEdge->m_startIndex])] = newEdge;
-				// 创建一条新边
+			
 				newEdge = new edge();
 				newEdge->m_startIndex = currIndex;
 				newEdge->m_endIndex = m_originalStr.size();
 				newEdge->m_pEndNode = new node();
 				newEdge->m_pStartNode = e->m_pEndNode;
 				e->m_pEndNode->m_pEdgeVector[index] = newEdge;
-				// 检查是否需要创建后缀连接
+			
 				if (preNode != nullptr)
 				{
 					preNode->m_pSuffixLink = e->m_pEndNode;
 				}
 				preNode = e->m_pEndNode;
 
-				// 之后更新 m_activate
+			
 				m_remainder--;
 				if (m_remainder == 1)
 				{
@@ -2707,17 +2605,14 @@ bool suffixTreeNew::onePoint(std::size_t currIndex, node* preNode)
 		}
 		else
 		{
-			char subC = m_originalStr[e->m_startIndex + m_activate.m_len];  // 取得这条边上的下一个字符，并于接下来的字符比较
+			char subC = m_originalStr[e->m_startIndex + m_activate.m_len];
 			if (c == subC)
 			{
-				// 继续增加 activate_length 和 remainder
 				m_activate.m_len++;
-				return false;  // 不需要继续处理
+				return false;
 			}
-			else  // 不相等，递归地处理各个activate point直到为 remainder 为0，或者有相同的后缀
+			else
 			{
-				// 首先进行边的分裂
-				// 将原来的边分为两部分
 				node* subNode = e->m_pEndNode;
 				e->m_pEndNode = new node();
 				e->m_endIndex = e->m_startIndex + m_activate.m_len;
@@ -2728,21 +2623,20 @@ bool suffixTreeNew::onePoint(std::size_t currIndex, node* preNode)
 				newEdge->m_pEndNode = subNode;
 				newEdge->m_pStartNode = e->m_pEndNode;
 				e->m_pEndNode->m_pEdgeVector[getIndex(m_originalStr[newEdge->m_startIndex])] = newEdge;
-				// 创建一条新边
+
 				newEdge = new edge();
 				newEdge->m_startIndex = currIndex;
 				newEdge->m_endIndex = m_originalStr.size();
 				newEdge->m_pEndNode = new node();
 				newEdge->m_pStartNode = e->m_pEndNode;
 				e->m_pEndNode->m_pEdgeVector[index] = newEdge;
-				// 检查是否需要创建后缀连接
+
 				if (preNode != nullptr)
 				{
 					preNode->m_pSuffixLink = e->m_pEndNode;
 				}
 				preNode = e->m_pEndNode;
 
-				// 之后更新 m_activate
 				m_remainder--;
 				if (m_remainder == 1)
 				{
@@ -2757,18 +2651,16 @@ bool suffixTreeNew::onePoint(std::size_t currIndex, node* preNode)
 			}
 		}
 	}
-	// 活动节点不是根节点
+
 	if (!m_activate.m_pNode->m_isRoot)
 	{
 		int subIndex = getIndex(m_activate.m_edgePrefix);
 		edge* e = m_activate.m_pNode->m_pEdgeVector[subIndex];
 		if (m_activate.m_len >= e->size())
 		{
-			// 它一定是一个一个增加的，极限情况就是 == 的情况，判断是否存在该字符引出的边
 			node* tempNode = e->m_pEndNode;
 			if (tempNode->m_pEdgeVector[index] != nullptr)
 			{
-				// 更新活动节点
 				m_activate.m_pNode = tempNode;
 				m_activate.m_edgePrefix = c;
 				m_activate.m_len = 1;
@@ -2786,25 +2678,23 @@ bool suffixTreeNew::onePoint(std::size_t currIndex, node* preNode)
 				newEdge->m_pEndNode = subNode;
 				newEdge->m_pStartNode = e->m_pEndNode;
 				e->m_pEndNode->m_pEdgeVector[getIndex(m_originalStr[newEdge->m_startIndex])] = newEdge;
-				// 创建一条新边
+		
 				newEdge = new edge();
 				newEdge->m_startIndex = currIndex;
 				newEdge->m_endIndex = m_originalStr.size();
 				newEdge->m_pEndNode = new node();
 				newEdge->m_pStartNode = e->m_pEndNode;
 				e->m_pEndNode->m_pEdgeVector[index] = newEdge;
-				// 检查是否需要创建后缀连接
+		
 				if (preNode != nullptr)
 				{
 					preNode->m_pSuffixLink = e->m_pEndNode;
 				}
 				preNode = e->m_pEndNode;
 
-				// 之后更新 m_activate
 				m_remainder--;
 				if (m_activate.m_pNode->m_pSuffixLink != nullptr)
 				{
-					// 存在后缀连接
 					m_activate.m_pNode = m_activate.m_pNode->m_pSuffixLink;
 				}
 				else
@@ -2815,15 +2705,13 @@ bool suffixTreeNew::onePoint(std::size_t currIndex, node* preNode)
 			}
 		}
 		else
-			// 还能在原来边上继续增加
 		{
-			char subC = m_originalStr[e->m_startIndex + m_activate.m_len];  // 取得这条边上的下一个字符，并于接下来的字符比较
+			char subC = m_originalStr[e->m_startIndex + m_activate.m_len];
 			if (c == subC)
 			{
-				// 继续增加 activate_length 和 remainder
 				m_activate.m_len++;
 			}
-			else  // 不相等，递归地处理各个activate point直到为 remainder 为0，或者有相同的后缀
+			else 
 			{
 				node* subNode = e->m_pEndNode;
 				e->m_pEndNode = new node();
@@ -2835,25 +2723,23 @@ bool suffixTreeNew::onePoint(std::size_t currIndex, node* preNode)
 				newEdge->m_pEndNode = subNode;
 				newEdge->m_pStartNode = e->m_pEndNode;
 				e->m_pEndNode->m_pEdgeVector[getIndex(m_originalStr[newEdge->m_startIndex])] = newEdge;
-				// 创建一条新边
+		
 				newEdge = new edge();
 				newEdge->m_startIndex = currIndex;
 				newEdge->m_endIndex = m_originalStr.size();
 				newEdge->m_pEndNode = new node();
 				newEdge->m_pStartNode = e->m_pEndNode;
 				e->m_pEndNode->m_pEdgeVector[index] = newEdge;
-				// 检查是否需要创建后缀连接
+		
 				if (preNode != nullptr)
 				{
 					preNode->m_pSuffixLink = e->m_pEndNode;
 				}
 				preNode = e->m_pEndNode;
 
-				// 之后更新 m_activate
 				m_remainder--;
 				if (m_activate.m_pNode->m_pSuffixLink != nullptr)
 				{
-					// 存在后缀连接
 					m_activate.m_pNode = m_activate.m_pNode->m_pSuffixLink;
 				}
 				else
@@ -2870,16 +2756,16 @@ bool suffixTreeNew::onePoint(std::size_t currIndex, node* preNode)
 void suffixTreeNew::generateMS(std::string& s)
 {
 	matchingStatistic.clear();
-	node* start = &m_root;  // 从哪个节点进行匹配
-	std::size_t alreadyMatch = 0;  // 已经匹配的字符长度
-	std::size_t maxMatch = 0;  // 匹配的最大长度
-	// 每一次需要进行以下过程：1、需要最大匹配 2、更新上述变量，为下次寻找做准备
+	node* start = &m_root;
+	std::size_t alreadyMatch = 0;
+	std::size_t maxMatch = 0;
+	
 	for (std::size_t i = 0; i < s.size(); i++)
 	{
 		node* pre = start;
 		std::size_t j = alreadyMatch;
 		edge* e = start->m_pEdgeVector[getIndex(s[i+j])];
-		while (j < maxMatch && j+e->size() < maxMatch)  // 快速去除已经实现的匹配
+		while (j < maxMatch && j+e->size() < maxMatch)
 		{
 			node* temp = e->m_pEndNode;
 			pre = temp;
@@ -2888,7 +2774,7 @@ void suffixTreeNew::generateMS(std::string& s)
 		}
 
 		int k = 0;
-		if (j == maxMatch)  // 前一轮重复的匹配已经跳过，开始本轮的匹配
+		if (j == maxMatch)
 		{
 			while (e != nullptr && i + j < s.size() && s[i + j] == getChar(e, k))
 			{
@@ -2896,7 +2782,7 @@ void suffixTreeNew::generateMS(std::string& s)
 				k++;
 				if (k == e->size())
 				{
-					if (i + j == s.size())  // 已经匹配完了
+					if (i + j == s.size())
 					{
 						break;
 					}
@@ -2907,9 +2793,8 @@ void suffixTreeNew::generateMS(std::string& s)
 			}
 
 		}
-		// 设置本轮匹配信息
 		maxMatch = j;
-		if (k == 0)  // 恰好把某条边匹配完
+		if (k == 0)
 		{
 			matchingStatistic.push_back(std::make_pair(maxMatch, pre));
 		}
@@ -2917,7 +2802,6 @@ void suffixTreeNew::generateMS(std::string& s)
 		{
 			matchingStatistic.push_back(std::make_pair(maxMatch, e->m_pEndNode));
 		}
-		// 设置下轮匹配信息
 		maxMatch--;
 		node* tempNode;
 		if (k == 0)
@@ -2987,9 +2871,8 @@ double suffixTreeNew::distance(suffixTreeNew& other)
 }
 
 template <class T>
-struct PlanTreeExp  // 利用后缀树计算树核的实现
+struct PlanTreeExp  // use the suffix tree to calculate subtree kernel
 {
-	// 与 best_plan 的结构和cost的偏离程度。也可以理解为某个 plan 的价值。当前我们认为 cost 差异越大，结构和内容差异越小，价值越大
 	double offset;
 
 	PlanTreeNode *root;
@@ -2997,11 +2880,9 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 	bool init_flag;
 	std::string str_serialize;
 	int node_num;
-	double s_dist_best, c_dist_best, cost_dist_best;  // 与 best_plan 之间的各种距离
-	double self_kernel;  // 用于对结构距离进行归一化
+	double s_dist_best, c_dist_best, cost_dist_best;
+	double self_kernel;
 
-	// 返回 expression 中的 name
-	// 如果 name 以 CPhysical 开头，将其删除
 	const char* get_name(T* exp)
 	{
 		if (NULL != exp)
@@ -3010,7 +2891,7 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 			const char * name_start = exp->Pop()->SzId();
 			const char * base_str = "CPhysical";
 
-			if(strlen(name_start) > 9)  // 确保 字符串一定比目标字符串长
+			if(strlen(name_start) > 9)
 			{
 				for(int i=0;i<9;++i)
 				{
@@ -3040,7 +2921,6 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 			return 0.0;
 	}
 
-	// 返回当前树的总 cost ，即根节点的 cost
 	double get_cost(){
 		return root->data.cost;
 	}
@@ -3051,7 +2931,6 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 		{
 			PlanTreeNode* cur = NULL;
 
-			// 检查这个操作是否为 CPhysical 操作，因为这个操作，所以 PlanTree 不再适用于其它类型
 #ifdef ARENA_PHYSICAL
 			if (child_expression->Pop()->FPhysical())  // CExpression* -> Coperator* -> bool
 			{
@@ -3061,11 +2940,9 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 				parent.push_back(cur);
 				int name_len = strlen(expression_name);
 
-				// 需要检查名字是否是 Scan 类型，如果是，需要获得 relation 的名字
-				// 字符串长度大于4，并且最后四个字母是 Scan，需要取得表名
 				if (name_len > 4 && !strcmp(expression_name + name_len - 4, "Scan"))
 				{
-					cur->data.tag = "SCAN";  // 节点的标签为: 扫描操作符
+					cur->data.tag = "SCAN";
 					gpos::ARENAIOstream table_name;
 					child_expression->Pop()->OsPrint(table_name);
 					std::string temp = table_name.ss.str();
@@ -3079,7 +2956,7 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 						PlanTreeNode * table = new PlanTreeNode(NodeData(0.0, temp.substr(start, end-start), "TABLE"));
 						cur->push_back(table);
 					}
-				} else if(name_len > 4 && !strcmp(expression_name + name_len -4, "Join"))  // Join 操作符，设置 JOIN 标签
+				} else if(name_len > 4 && !strcmp(expression_name + name_len -4, "Join"))
 				{
 					cur->data.tag = "JOIN";
 				}
@@ -3089,15 +2966,12 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 					insert_child((*child_expression)[i], *cur);
 				}
 
-				// 检查 如果是 Motion 操作节点，并且节点下只有一个子节点，并且该节点的 cost 和 子节点的 cost 相同，则去除该节点
 				const char * motionOp = "Motion";
 				if (cur->data.name.size() > 6 && cur->data.name.compare(0, 6, motionOp) == 0 && cur->size() == 1 && 
-					cur->data.cost - (*cur)[0]->data.cost < 0.1 * cur->data.cost )  // 该节点与子节点的 cost 差异很小
+					cur->data.cost - (*cur)[0]->data.cost < 0.1 * cur->data.cost )
 				{
-					// 将当前节点从父节点中去除并将子节点移入到父节点的孩子中
 					parent.child[parent.size()-1] = (*cur)[0];
-					// 释放当前节点的内存
-					cur->child[0] = nullptr;  // 析构函数会递归地释放孩子的内存，所以用空指针代替
+					cur->child[0] = nullptr;
 					delete cur;
 				}
 #ifdef ARENA_PHYSICAL
@@ -3120,12 +2994,11 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 	}
 
 
-	void init(T* plan, int flag)  // 与上述 init 函数的功能相同，但是该函数中将各个部分进行了拆分，用于测试不同初始化的时间
+	void init(T* plan, int flag)
 	{
 		if (flag == 0 && NULL != plan)
 		{
 			root = new PlanTreeNode(NodeData(get_cost(plan), get_name(plan)));
-			// 如果节点是 表扫描操作 或者是 连接操作，设置 node 的 tag
 			if (root->data.name.size() > 4)
 			{
 				std::size_t compareStart = root->data.name.size() - 4;
@@ -3138,20 +3011,16 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 				}
 			}
 
-			// 添加子节点
 			for (std::size_t i = 0; i < plan->Arity(); ++i)
 			{
 				insert_child((*plan)[i], *root);
 			}
 
-			// 检测节点是否是 Motion 节点，如果是，删除
 			if (root->data.name.size() > 6 && root->data.name.compare(0, 6, "Motion") == 0 && root->size() == 1 && 
-				root->data.cost - (*root)[0]->data.cost < 0.1 * root->data.cost )  // 该节点与子节点的 cost 差异很小
+				root->data.cost - (*root)[0]->data.cost < 0.1 * root->data.cost )
 			{
-				// 临时存储子节点的地址
 				auto temp = (*root)[0];
-				// 释放当前节点的内存
-				root->child[0] = nullptr;  // 析构函数会递归地释放孩子的内存，所以用空指针代替
+				root->child[0] = nullptr;
 				delete root;
 				root = temp;
 			}
@@ -3160,11 +3029,9 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 		init_flag = true;
 		if (flag == 1)
 		{
-			// 将树转变为字符串，之后再构建后缀树
 			str_serialize = postOrder(root);
 			m_stn = new suffixTreeNew();
 			m_stn->init(str_serialize);
-			// stn.init(str_serialize);
 		}
 	}
 
@@ -3175,7 +3042,7 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 		}
 
 		std::string treeStr;
-		if (root->size() == 0) {  // 叶子节点
+		if (root->size() == 0) {
 			treeStr = "[]";
 		}
 		else
@@ -3190,27 +3057,20 @@ struct PlanTreeExp  // 利用后缀树计算树核的实现
 
 		return treeStr;
 	}
-
-public:
-	//****************** 距离相关的一些函数 ********************************/
 };
-/************************************************************/
-
 
 ///**************************************************/
-/// 一些会用到的全局变量
+/// some global variables
 ///**************************************************/
-std::queue<CExpression *> plan_buffer;  // 用于存储所有 CExpressioin 的缓存，主线程用于向该变量中不断地
-std::vector<CExpression *> plan_buffer_for_exp;  // 用于存储所有 CExpressioin 的缓存，主线程用于向该变量中不断地
-std::vector<PlanTree<CExpression>> plan_trees;  // 添加元素，辅助线程将其转换为 PlanTree
+std::queue<CExpression *> plan_buffer;
+std::vector<CExpression *> plan_buffer_for_exp; 
+std::vector<PlanTree<CExpression>> plan_trees;
 std::vector<PlanTreeHash<CExpression>> plan_trees_hash;
-std::vector<PlanTreeHash<CExpression>> plan_trees_send;  // 用于最后发送相关 plan 时，生成 plan 的详细信息
+std::vector<PlanTreeHash<CExpression>> plan_trees_send;
 
 
 ///**************************************************/
-/// 负责将所有的结果都存储到 HTTP 客户端中，最后统一发送
-/// 参数：
-///		id 代表这个 plan tree 在 plan_trees 中的索引
+/// send the result to web server
 ///**************************************************/
 void addResult(int id)
 {
@@ -3236,25 +3096,25 @@ void addResult(int id)
 		j["relevance"] = plan_trees_hash[id].offset; 
 	}
 
-	j["content"] = plan_trees_send.back().root->generate_json();  // 只有 content 内容需要使用详细信息，其它部分可以用原来 Plan 的信息
+	j["content"] = plan_trees_send.back().root->generate_json();
 	std::string result= j.dump();
     if(web_client->isStart())
     {
         web_client->send_result(result);
     }
 
-	// 负责将 counter + 1
 	++counter;
 }
 
 
+// B-TIPS algorithm
 template<class T>
 void FindK(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<MinDist> &dist_record)
 {
-	res.push_back(0);  // res 的第一个元素是 QEP
-	addResult(0);  // 将数据发送
+	res.push_back(0);  // the first element is QEP
+	addResult(0);  // send plan
 
-    // 总数比需要找到的数量少
+    // if the total number is smaller than target number
     if (plans.size() <= gARENAK)
     {
 		for (std::size_t i = 1; i < plans.size(); ++i)
@@ -3262,35 +3122,34 @@ void FindK(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<Min
 			if (plans[i].root->data.cost != plans[0].root->data.cost)
 			{
 				res.push_back(i);
-				addResult(i);  // 将数据发送
+				addResult(i);
 			}
         }
     }
-    // 寻找 k 个 plan
+    // find k informative plans
     else {
-		std::vector<MinDist> tempRemoved;  // 记录需要暂时移除的计划
-		tempRemoved.reserve(plans.size() / 3);  // 默认先申请 1/3 的内存
+		std::vector<MinDist> tempRemoved;
+		tempRemoved.reserve(plans.size() / 3);
 
+		// iterate gARENAK times, select a valid maximum value each time
         for (std::size_t i = 0; i < gARENAK; ++i)
-		// 迭代 k 次
-		// 每次都从 dist_record 的最大值处进行遍历，直到可以进行剪枝为止
         {
 			MinDist maxValue;
 			maxValue.dist = -100;
-			while(!dist_record.empty() && dist_record.top() > maxValue) {  // 当其非空并且顶部的元素的最小距离仍然大于最大值时
-				if (dist_record.top().distNum == i) { // 记录的值就是正确的值 
-					tempRemoved.push_back(maxValue);  // 记录前一个值
-					maxValue = dist_record.top();  // 记录新的最大值
-				} else {  // 最小距离的值不是最新的，需要更新最小距离
+			while(!dist_record.empty() && dist_record.top() > maxValue) {
+				if (dist_record.top().distNum == i) { // if current value is valid
+					tempRemoved.push_back(maxValue);
+					maxValue = dist_record.top();
+				} else {
 					MinDist topElement = dist_record.top();
 					for(std::size_t j=topElement.distNum+1; j<=i ; j++) {
-						double dist = plans[topElement.index].distance(plans[res[j]]);  // 此处计算的是两个plan间的距离；dist_record.top().index 代表当前最大元素在plans中的索引；res[j]代表第j个结果的索引
-						topElement.distNum = j;  // 更新距离的记录
+						double dist = plans[topElement.index].distance(plans[res[j]]);
+						topElement.distNum = j;
 						if(dist < topElement.dist)
 							topElement.dist = dist;
 					}
 
-					if (topElement > maxValue)  // 更新最大值
+					if (topElement > maxValue)
 					{
 						tempRemoved.push_back(maxValue);
 						maxValue = topElement;
@@ -3302,7 +3161,7 @@ void FindK(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<Min
 				dist_record.pop();
 			}
 
-			// 记录结果，更新堆
+			// update the heap
 			res.push_back(maxValue.index);
 			addResult(maxValue.index);
 			for(auto & md : tempRemoved)
@@ -3312,12 +3171,10 @@ void FindK(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<Min
     }
 }
 
-// 处理 I-AQPS 模式的相关算法算法
 void handler(int a) {
     a++;
 }
 
-// 更改信号的控制函数，更改的信号为 SIGUSR1
 void changeHandler(){
     struct sigaction newAct;
     newAct.sa_handler = handler;
@@ -3327,13 +3184,6 @@ void changeHandler(){
     sigaction(SIGUSR1, &newAct, nullptr);
 }
 
-// 用于对文件进行加锁和释放锁的操作
-// Args:
-//		fd 文件描述符
-//		type 1->加锁  0->释放锁
-// Return:
-//		0 成功
-// 		other 失败
 int lockFile(int fd, int type)
 {
 	struct flock lock;
@@ -3352,14 +3202,12 @@ int lockFile(int fd, int type)
 	return fcntl(fd, F_SETLKW, &lock);
 }
 
-// 向文件描述符中输出字符串 s
 void ARENAWrite(int fd, std::string & s)
 {
 	const char * res = s.c_str();
 	write(fd, res, strlen(res));
 }
 
-// 告诉前端当前进程停止运行，删除数据库中该 pid 的记录
 void ARENATellFrontStop(pid_t pid) {
 	curl_global_init(CURL_GLOBAL_DEFAULT);
     CURL * handle = curl_easy_init();
@@ -3376,25 +3224,23 @@ void ARENATellFrontStop(pid_t pid) {
     curl_easy_cleanup(handle);
 }
 
-// 用于 I-AQPS 模式将结果输出到文件中
-// 它会申请文件写锁，然后写入，之后关闭文件，释放锁
+// output the I-TIPS result
 void IAQPOutputRes(int id)
 {
-	// 打开文件，并对其加锁
+	// open the file and lock it
 	std::string fileName = "/tmp/" + gResFile;
 	int fd = open(fileName.c_str(), O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU|S_IRWXG);
 	if(fd == -1)
 	{
 		return;
 	}
-	if(lockFile(fd, 1) != 0)  // 加锁
+	if(lockFile(fd, 1) != 0)
 	{
 		return;
 	}
 
-	// 生成需要输出的内容
 	std::string result;
-	if(id == -1)  // 已经没有新的 plan 可以返回了
+	if(id == -1)
 	{
 		result = "no more";
 	}
@@ -3422,61 +3268,57 @@ void IAQPOutputRes(int id)
 			j["relevance"] = plan_trees_hash[id].offset; 
 		}
 
-		j["content"] = plan_trees_send.back().root->generate_json();  // 只有 content 内容需要使用详细信息，其它部分可以用原来 Plan 的信息
+		j["content"] = plan_trees_send.back().root->generate_json();
 		result= j.dump();
 		counter++;
 	}
 	ARENAWrite(fd, result);
-	// 输出换行
 	write(fd, "\n", 1);
-	// 输出 Pid
 	result = std::to_string(getpid());
 	ARENAWrite(fd, result);
 
-	// 释放锁
 	lockFile(fd, 0);
 	close(fd);
 }
 
 
+// I-TIPS algorithm
 template<class T>
 void FindK_I(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<MinDist> &dist_record)
 {
 	changeHandler();
 
-	res.push_back(0);  // res 的第一个元素是 QEP
-	IAQPOutputRes(0);  // 将数据发送
+	res.push_back(0);  // the first element is the QEP
+	IAQPOutputRes(0);
 	unsigned int t;
-	t = sleep(300);  // 等待5分钟
-	if (t == 0)  // 被信号唤醒
+	t = sleep(300);
+	if (t == 0)
 	{
 		ARENATellFrontStop(getpid());
 		return;
 	}
 
-	std::vector<MinDist> tempRemoved;  // 记录需要暂时移除的计划
-	tempRemoved.reserve(plans.size() / 3);  // 默认先申请 1/3 的内存
+	std::vector<MinDist> tempRemoved;
+	tempRemoved.reserve(plans.size() / 3);
 
 	for (std::size_t i = 0; i < plans.size(); ++i)
-	// 迭代 k 次
-	// 每次都从 dist_record 的最大值处进行遍历，直到可以进行剪枝为止
 	{
 		MinDist maxValue;
 		maxValue.dist = -100;
-		while(!dist_record.empty() && dist_record.top() > maxValue) {  // 当其非空并且顶部的元素的最小距离仍然大于最大值时
-			if (dist_record.top().distNum == i) { // 记录的值就是正确的值 
-				tempRemoved.push_back(maxValue);  // 记录前一个值
-				maxValue = dist_record.top();  // 记录新的最大值
-			} else {  // 最小距离的值不是最新的，需要更新最小距离
+		while(!dist_record.empty() && dist_record.top() > maxValue) {
+			if (dist_record.top().distNum == i) {
+				tempRemoved.push_back(maxValue);
+				maxValue = dist_record.top();
+			} else {
 				MinDist topElement = dist_record.top();
 				for(std::size_t j=topElement.distNum+1; j<=i ; j++) {
-					double dist = plans[topElement.index].distance(plans[res[j]]);  // 此处计算的是两个plan间的距离；dist_record.top().index 代表当前最大元素在plans中的索引；res[j]代表第j个结果的索引
-					topElement.distNum = j;  // 更新距离的记录
+					double dist = plans[topElement.index].distance(plans[res[j]]);
+					topElement.distNum = j;
 					if(dist < topElement.dist)
 						topElement.dist = dist;
 				}
 
-				if (topElement > maxValue)  // 更新最大值
+				if (topElement > maxValue)
 				{
 					tempRemoved.push_back(maxValue);
 					maxValue = topElement;
@@ -3488,15 +3330,14 @@ void FindK_I(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<M
 			dist_record.pop();
 		}
 
-		// 记录结果，更新堆
 		res.push_back(maxValue.index);
 		for(auto & md : tempRemoved)
 			dist_record.push(md);
 		tempRemoved.clear();
 
 		IAQPOutputRes(maxValue.index);
-		t = sleep(300);  // 等待5分钟
-		if (t != 0)  // 被信号唤醒
+		t = sleep(300);
+		if (t != 0)
 		{
 			continue;
 		}
@@ -3509,8 +3350,8 @@ void FindK_I(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<M
 	while(true)
 	{
 		IAQPOutputRes(-1);
-		t = sleep(60);  // 等待1分钟
-		if (t != 0)  // 被信号唤醒
+		t = sleep(60);
+		if (t != 0)
 		{
 			continue;
 		}
@@ -3522,13 +3363,10 @@ void FindK_I(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<M
 	}
 }
 
+// calculate the plan interestringness of a plan set
 double ARENACalculateDist(std::vector<int> & res)
 {
 	plan_trees_hash.reserve(res.size());
-	// std::ofstream fout_test("/tmp/test", std::ios_base::app);
-
-	// fout_test << "\n尝试获得 cost 的最大值\n";
-	// 设置 cost 的最大值
 	for(std::size_t i=0;i<plan_buffer_for_exp.size();i++)
 	{
 		double temp_cost = plan_buffer_for_exp[i]->Cost().Get();
@@ -3537,39 +3375,30 @@ double ARENACalculateDist(std::vector<int> & res)
 			max_cost = temp_cost;
 		}
 	}
-	// fout_test << "获得 cost 的最大值成功\n";
 
-	// 初始化的第零阶段，生成 plan_tree 结构
 	for (std::size_t i = 0; i < res.size(); i++)
 	{
 		plan_trees_hash.push_back(PlanTreeHash<CExpression>());
 		plan_trees_hash[i].init(plan_buffer_for_exp[res[i]], 0);
 	}
-	// fout_test << "第一阶段初始成功\n";
 
-	// 初始化第一阶段，生成一棵树的所有统计信息
-	for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init1
+	for(std::size_t i=0;i<plan_trees_hash.size();i++)
 	{
 		plan_trees_hash[i].init(NULL, 1);
 	}
-	// fout_test << "第二阶段初始成功\n";
 
-	// 初始化第二阶段，生成节点内容组成的字符串，用于计算内容差异
 	for (std::size_t i = 0; i < plan_trees_hash.size(); i++)
 	{
 		plan_trees_hash[i].init(NULL, 2);
 	}
-	// fout_test << "第三阶段初始成功\n";
 
-	// 初始化第三阶段，计算自己与自己的树核
-	for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init3
+	for(std::size_t i=0;i<plan_trees_hash.size();i++)
 	{
 		plan_trees_hash[i].init(NULL, 3);
 	}
-	// fout_test << "第四阶段初始成功\n";
 	max_cost -= plan_trees_hash[0].root->data.cost;
 
-	// 计算每个计划于 QEP 的距离
+	
 	double min_dist;
 	{
 		double temp_dist;
@@ -3582,7 +3411,6 @@ double ARENACalculateDist(std::vector<int> & res)
 			}
 		}
 	}
-	// fout_test << "计算每个计划于 QEP 的距离成功\n";
 
 	{
 		double temp_dist;
@@ -3598,7 +3426,6 @@ double ARENACalculateDist(std::vector<int> & res)
 			}
 		}
 	}
-	// fout_test << "计算最小距离成功\n";
 	plan_trees_hash.clear();
 	return min_dist;
 }
@@ -3614,23 +3441,22 @@ double ARENACalculateDist(std::unordered_set<int> & res)
 	return ARENACalculateDist(new_res);
 }
 
-
-// 用于实验的随机选择算法
+// random algorithm in Exp1
 template<class T>
 double FindKRandomExp(std::vector<T>& plans, std::vector<int>& res, std::size_t k)
 {
 	std::default_random_engine rand(time(NULL));
     std::uniform_int_distribution<int> dis(1, plans.size()-1);
 	double distance = -100;
-	for(int iter=0;iter<30;iter++)  // 迭代 30 次
+	for(int iter=0;iter<30;iter++)  // Iterate 30 times
 	{
-		std::unordered_set<int> res_set;  // 记录最终结果的编号
+		std::unordered_set<int> res_set;
 		res_set.insert(0);
 		std::size_t num = 0;
-		while(num < k)
+		while(num < k)  // generate a random result
 		{
 			int id = dis(rand) % plans.size();
-			if(res_set.find(id) == res_set.end())  // 原来没有记录
+			if(res_set.find(id) == res_set.end())
 			{
 				res_set.insert(id);
 				num++;
@@ -3652,7 +3478,7 @@ double FindKRandomExp(std::vector<T>& plans, std::vector<int>& res, std::size_t 
 	return distance;
 }
 
-// 用于实验的基于 cost 的选择算法
+// Cost algorithm in Exp1
 template<class T>
 void FindKCostExp(std::vector<T>& plans, std::vector<int>& res, std::size_t k)
 {
@@ -3673,31 +3499,29 @@ void FindKCostExp(std::vector<T>& plans, std::vector<int>& res, std::size_t k)
 template<class T>
 void FindKTimeExpNew(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<MinDist> &dist_record)
 {
-	res.push_back(0);  // res 的第一个元素是 QEP
+	res.push_back(0);
 
-	std::vector<MinDist> tempRemoved;  // 记录需要暂时移除的计划
-	tempRemoved.reserve(plans.size() / 3);  // 默认先申请 1/3 的内存
+	std::vector<MinDist> tempRemoved;
+	tempRemoved.reserve(plans.size() / 3);
 
-	for (std::size_t i = 0; i < 100; ++i)  // 寻找10个结果
-	// 迭代 k 次
-	// 每次都从 dist_record 的最大值处进行遍历，直到可以进行剪枝为止
+	for (std::size_t i = 0; i < 100; ++i)
 	{
 		MinDist maxValue;
 		maxValue.dist = -100;
-		while(!dist_record.empty() && dist_record.top() > maxValue) {  // 当其非空并且顶部的元素的最小距离仍然大于最大值时
-			if (dist_record.top().distNum == i) { // 记录的值就是正确的值 
-				tempRemoved.push_back(maxValue);  // 记录前一个值
-				maxValue = dist_record.top();  // 记录新的最大值
-			} else {  // 最小距离的值不是最新的，需要更新最小距离
+		while(!dist_record.empty() && dist_record.top() > maxValue) {
+			if (dist_record.top().distNum == i) {
+				tempRemoved.push_back(maxValue);
+				maxValue = dist_record.top();
+			} else {
 				MinDist topElement = dist_record.top();
 				for(std::size_t j=topElement.distNum+1; j<=i ; j++) {
-					double dist = plans[topElement.index].distance(plans[res[j]]);  // 此处计算的是两个plan间的距离；dist_record.top().index 代表当前最大元素在plans中的索引；res[j]代表第j个结果的索引
-					topElement.distNum = j;  // 更新距离的记录
+					double dist = plans[topElement.index].distance(plans[res[j]]);
+					topElement.distNum = j;
 					if(dist < topElement.dist)
 						topElement.dist = dist;
 				}
 
-				if (topElement > maxValue)  // 更新最大值
+				if (topElement > maxValue)
 				{
 					tempRemoved.push_back(maxValue);
 					maxValue = topElement;
@@ -3709,7 +3533,6 @@ void FindKTimeExpNew(std::vector<T>& plans, std::vector<int>& res, std::priority
 			dist_record.pop();
 		}
 
-		// 记录结果，更新堆
 		res.push_back(maxValue.index);
 		for(auto & md : tempRemoved)
 			dist_record.push(md);
@@ -3717,6 +3540,7 @@ void FindKTimeExpNew(std::vector<T>& plans, std::vector<int>& res, std::priority
 	}
 }
 
+// B-TIPS-BASIC
 template<class T>
 void FindKTimeExpOld(std::vector<T>& plans, std::vector<int>& res, std::unordered_map<int, double> & dist_record, std::size_t k=0)
 {
@@ -3727,14 +3551,13 @@ void FindKTimeExpOld(std::vector<T>& plans, std::vector<int>& res, std::unordere
 		k = 10;
 	}
 
-	for (std::size_t i = 0; i < k; ++i)  // 迭代 k 次
+	for (std::size_t i = 0; i < k; ++i)
 	{
-		// 本轮迭代需要加入的索引
 		int index = -1;
 		double max_min = -DBL_MIN;
 		double dist;
 
-		// 第一次迭代，需要初始化 dist_record
+		// the first iteration
 		if (i == 0)
 		{
 			for (std::size_t j = 1; j < plans.size(); ++j)
@@ -3753,7 +3576,6 @@ void FindKTimeExpOld(std::vector<T>& plans, std::vector<int>& res, std::unordere
 			{
 				if (falive[j])
 				{
-					// 找到最小距离
 					dist = plans[new_add].distance(plans[j]);
 					if (dist < dist_record[j])
 					{
@@ -3764,7 +3586,6 @@ void FindKTimeExpOld(std::vector<T>& plans, std::vector<int>& res, std::unordere
 						dist = dist_record[j];
 					}
 
-					// 大于当前已经找到的最小距离的最大值
 					if (dist > max_min)
 					{
 						index = j;
@@ -3775,40 +3596,39 @@ void FindKTimeExpOld(std::vector<T>& plans, std::vector<int>& res, std::unordere
 		}
 
 		res.push_back(index);
-		falive[index] = 0;  // 标注这个 index 已经被选出
+		falive[index] = 0;
 		new_add = index;
 	}
 }
 
+// B-TIPS-HEAP with plan interestingness
 template<class T>
 double FindKDiffMethodExp(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<MinDist> &dist_record, std::size_t k, std::vector<double> * dist_list = nullptr)
 {
-	res.push_back(0);  // res 的第一个元素是 QEP
+	res.push_back(0);
 
-	std::vector<MinDist> tempRemoved;  // 记录需要暂时移除的计划
-	tempRemoved.reserve(plans.size() / 3);  // 默认先申请 1/3 的内存
+	std::vector<MinDist> tempRemoved;
+	tempRemoved.reserve(plans.size() / 3);
 	double res_dist = 0.0;
 
-	// 迭代 k 次
-	// 每次都从 dist_record 的最大值处进行遍历，直到可以进行剪枝为止
-	for (std::size_t i = 0; i < k; ++i)  // 寻找10个结果
+	for (std::size_t i = 0; i < k; ++i)
 	{
 		MinDist maxValue;
 		maxValue.dist = -100;
-		while(!dist_record.empty() && dist_record.top() > maxValue) {  // 当其非空并且顶部的元素的最小距离仍然大于最大值时
-			if (dist_record.top().distNum == i) { // 记录的值就是正确的值 
-				tempRemoved.push_back(maxValue);  // 记录前一个值
-				maxValue = dist_record.top();  // 记录新的最大值
-			} else {  // 最小距离的值不是最新的，需要更新最小距离
+		while(!dist_record.empty() && dist_record.top() > maxValue) {
+			if (dist_record.top().distNum == i) {
+				tempRemoved.push_back(maxValue);
+				maxValue = dist_record.top();
+			} else {
 				MinDist topElement = dist_record.top();
 				for(std::size_t j=topElement.distNum+1; j<=i ; j++) {
-					double dist = plans[topElement.index].distance(plans[res[j]]);  // 此处计算的是两个plan间的距离；dist_record.top().index 代表当前最大元素在plans中的索引；res[j]代表第j个结果的索引
-					topElement.distNum = j;  // 更新距离的记录
+					double dist = plans[topElement.index].distance(plans[res[j]]);
+					topElement.distNum = j;
 					if(dist < topElement.dist)
 						topElement.dist = dist;
 				}
 
-				if (topElement > maxValue)  // 更新最大值
+				if (topElement > maxValue) 
 				{
 					tempRemoved.push_back(maxValue);
 					maxValue = topElement;
@@ -3820,7 +3640,6 @@ double FindKDiffMethodExp(std::vector<T>& plans, std::vector<int>& res, std::pri
 			dist_record.pop();
 		}
 
-		// 记录结果，更新堆
 		res.push_back(maxValue.index);
 		res_dist = maxValue.dist;
 		if(dist_list != nullptr)

@@ -42,15 +42,12 @@ using namespace gpos;
 //		Lookup table for counting/unranking of trees;
 //
 //		Enables client to associate objects of type T (e.g. CGroupExpression)
-//		with a topology solely(单独地) given by edges between the object. The
+//		with a topology solely given by edges between the object. The
 //		unranking utilizes client provided function and generates results of
 //		type R (e.g., CExpression);
 //		U is a global context accessible to recursive rehydrate calls.
 //		Pointers to objects of type U are passed through PrUnrank calls to the
 //		rehydrate function of type PrFn.
-//		T 每个节点原本的类型
-//		R 利用 unrank 函数返回 R 类型的结果
-//		U 递归调用的过程中可以全局访问的变量。
 //
 //---------------------------------------------------------------------------
 template <class T, class R, class U, ULONG (*HashFn)(const T *),
@@ -159,11 +156,9 @@ private:
 		CMemoryPool *m_mp;
 
 		// id of node
-		// 节点的 id
 		ULONG m_ul;
 
 		// element
-		// const T *m_value;
 		T *m_value;
 
 		// array of children arrays
@@ -179,7 +174,6 @@ private:
 		ENodeState m_ens;
 
 		// total tree count for a given child
-		// 以某个子节点为根节点的树的数量(判断某个 Group 中树的数量)
 		ULLONG
 		UllCount(ULONG ulChild)
 		{
@@ -187,11 +181,10 @@ private:
 
 			ULLONG ull = 0;
 
-			// ulCandidates 是 TreeNode 列表的长度
-			ULONG ulCandidates = (*m_pdrgdrgptn)[ulChild]->Size();  // pdrgpdrgptn[ulChild] 取得的是一个 TreeNode 列表，所有的 expression
+			ULONG ulCandidates = (*m_pdrgdrgptn)[ulChild]->Size();
 			for (ULONG ulAlt = 0; ulAlt < ulCandidates; ulAlt++)
 			{
-				CTreeNode *ptn = (*(*m_pdrgdrgptn)[ulChild])[ulAlt];  // 某个 Group 的树的个数
+				CTreeNode *ptn = (*(*m_pdrgdrgptn)[ulChild])[ulAlt];
 				ULLONG ullCount = ptn->UllCount();
 				ull = gpos::Add(ull, ullCount);
 			}
@@ -200,12 +193,6 @@ private:
 		}
 
 
-		/******************** ARENA ********************/
-		// 根据某个 tree 构成的所有子树的编号获得该 tree 的所有编号
-		// Args:
-		//		subId: 子树对应的 id 序列
-		//		num: 每个子树原本的数量
-		/***********************************************/
 		void
 		ARENA_getIdList(const std::vector<std::vector<int>>& subId,const std::vector<int>& num, std::vector<int>& idList, std::vector<std::unordered_map<int, CCost>> * costList = nullptr)
 		{
@@ -214,35 +201,6 @@ private:
 				return;
 			}
 
-			// 右边是低位
-			// int i = ((int)subId.size()) - 1;
-			// for(auto n : subId[i])
-			// {
-			// 	idList.push_back(n);
-			// }
-
-			// for(i--;i>=0;i--)
-			// {
-			// 	int len = (int)idList.size();
-			// 	int maxSize = (int)subId[i].size();  // 当前子树的所有的不同 id
-			// 	int k=0;
-			// 	for(;k<maxSize-1;k++)
-			// 	{
-			// 		int addNum = (subId[i][k] - 1) * num[i+1];
-			// 		for(int j=0;j<len;j++)
-			// 		{
-			// 			idList.push_back(idList[j] + addNum);
-			// 		}
-			// 	}
-
-			// 	int addNum = (subId[i][k] - 1) * num[i+1];
-			// 	for(int j=0;j<len;j++)
-			// 	{
-			// 		idList[j] += addNum;
-			// 	}
-			// }
-
-			// 左边是低位
 			std::vector<std::vector<int>> recordIdList;
 			int i = 0;
 			for(auto n : subId[i])
@@ -257,7 +215,7 @@ private:
 			for(i++;i<(int)subId.size();i++)
 			{
 				int len = (int)idList.size();
-				int maxSize = (int)subId[i].size();  // 当前子树的所有的不同 id
+				int maxSize = (int)subId[i].size();
 				int k=0;
 				for(;k<maxSize-1;k++)
 				{
@@ -265,7 +223,7 @@ private:
 					for(int j=0;j<len;j++)
 					{
 						idList.push_back(idList[j] + addNum);
-						if(costList != nullptr)  // 记录生成这个 id 用到的所有 subGroup 的 id
+						if(costList != nullptr)
 						{
 							recordIdList.push_back(recordIdList[j]);
 							recordIdList.back().push_back(subId[i][k]);
@@ -288,58 +246,57 @@ private:
 			{
 				if(! ARENA_isVirtual)
 				{
-					for (std::size_t j = 0; j < idList.size(); j++)  // 遍历每一个 id
+					for (std::size_t j = 0; j < idList.size(); j++)
 					{
 						std::vector<CCost *> tempArray;
 						for (std::size_t k = 0; k < recordIdList[j].size(); k++)
 						{
-							int subGroupId = recordIdList[j][k];  // recordIdList[j] 代表第 j 个 id 形成时用到的所有子 Group 的id列表，[k] 代表第 k 个子Group
+							int subGroupId = recordIdList[j][k];
 							CCost & tempCost = costList->at(k).at(subGroupId);
-							tempArray.push_back(&tempCost);	 // costList 是一个列表，其中的每一项代表相应子 Group 的 id2Cost 映射表
+							tempArray.push_back(&tempCost);
 						}
 #ifdef ARENA_COSTFT
-						ARENA_id2Cost[idList[j]] = m_value->CostCompute(m_mp, tempArray);  // idList[j] 是计算出的新的 id
+						ARENA_id2Cost[idList[j]] = m_value->CostCompute(m_mp, tempArray);
 #endif
 					}
 				}
-				else  // 虚拟节点，直接将子 Group 的 CCost 移动过来即可
+				else
 				{
 #ifdef ARENA_COSTFT
-					for (std::size_t j = 0; j < idList.size(); j++)  // 遍历每一个 id
+					for (std::size_t j = 0; j < idList.size(); j++)  
 					{
 						CCost tempCost;
 						for (std::size_t k = 0; k < recordIdList[j].size(); k++)
 						{
-							int subGroupId = recordIdList[j][k];  // recordIdList[j] 代表第 j 个 id 形成时用到的所有子 Group 的id列表，[k] 代表第 k 个子Group
+							int subGroupId = recordIdList[j][k];
 							tempCost = costList->at(k).at(subGroupId);
 						}
-						ARENA_id2Cost[idList[j]] = tempCost;  // idList[j] 是计算出的新的 id
+						ARENA_id2Cost[idList[j]] = tempCost;
 					}
 #endif
 				}
 			}
 		}
 
-		// costList : 记录每个 id 对应的 CCost 对象
 		void
 		ARENA_TreeCount(ULONG ulChild, std::vector<std::vector<std::string>> & treeRecord, std::vector<std::vector<std::vector<int>>> * idRecord=nullptr, std::vector<std::unordered_map<int, CCost>> * costList = nullptr)
 		{
 			std::vector<std::string> tempList;
-			std::vector<std::vector<int>> tempListId;  // 当前该 group 不同 GroupTree 对应的 id
-			std::unordered_map<std::string, int> tempRecord;  // 记录每种不同 GroupTree 对应的索引
-			std::unordered_map<int, CCost> id2Cost;  // 记录 id 到 CCost 的映射
-			// ulCandidates 是 TreeNode 列表的长度
-			ULONG ulCandidates = (*m_pdrgdrgptn)[ulChild]->Size();  // pdrgpdrgptn[ulChild] 取得的是一个 TreeNode 列表，所有的 expression
-			int prefixNum = 0;  // 每个 expression 都有数个 GroupTree，对于第 k 个 expression, 计算其中 GroupTree 对应的 id 时需要加上前 k-1 个 expression 的总数量
-			for (ULONG ulAlt = 0; ulAlt < ulCandidates; ulAlt++)  // 遍历每一个 expression
+			std::vector<std::vector<int>> tempListId;
+			std::unordered_map<std::string, int> tempRecord;
+			std::unordered_map<int, CCost> id2Cost;  
+
+			ULONG ulCandidates = (*m_pdrgdrgptn)[ulChild]->Size(); 
+			int prefixNum = 0; 
+			for (ULONG ulAlt = 0; ulAlt < ulCandidates; ulAlt++)
 			{
-				CTreeNode *ptn = (*(*m_pdrgdrgptn)[ulChild])[ulAlt];  // 某个 Group 的树的个数
-				// 遍历该 TreeNode 下的所有 groupTree
-				if(idRecord == nullptr)  // 不需要统计 GroupTree 对应的 id 信息
+				CTreeNode *ptn = (*(*m_pdrgdrgptn)[ulChild])[ulAlt];
+
+				if(idRecord == nullptr)
 				{
 					for(auto tree: ptn->ARENA_groupTree)
 					{
-						if(tempRecord.find(tree) == tempRecord.end())  // 还未记录
+						if(tempRecord.find(tree) == tempRecord.end())
 						{
 							tempList.push_back(tree);
 							tempRecord[tree] = 1;
@@ -348,32 +305,32 @@ private:
 				}
 				else
 				{
-					for(auto& pair: ptn->ARENA_groupTreePlus)  // 需要考虑不同 GroupTree 对应的 plan id
+					for(auto& pair: ptn->ARENA_groupTreePlus) 
 					{
-						if(tempRecord.find(pair.first) == tempRecord.end())  // 还未记录
+						if(tempRecord.find(pair.first) == tempRecord.end())
 						{
 							tempList.push_back(pair.first);
 							tempRecord[pair.first] = tempList.size()-1;
 							tempListId.push_back(pair.second);
-							// 更新相应的 id
+
 							auto& temp = tempListId.back();
 							for(std::size_t i=0;i<temp.size();i++)
 							{
-								if(costList != nullptr)  // 记录相应 id 对应的 CCost
+								if(costList != nullptr)
 								{
 #ifdef ARENA_COSTFT
-									id2Cost[temp[i]+prefixNum] = ptn->ARENA_id2Cost[temp[i]];  // 更新这个 CCost 在 Group 中的编号
+									id2Cost[temp[i]+prefixNum] = ptn->ARENA_id2Cost[temp[i]];
 #endif
 								}
 								temp[i] += prefixNum;
 							}
 						}
-						else  // 增加记录新的 id
+						else
 						{
 							int tempId = tempRecord[pair.first];
 							for (std::size_t i = 0; i < pair.second.size(); i++)
 							{
-								if(costList != nullptr)  // 记录 id 对应的 cost
+								if(costList != nullptr)
 								{
 #ifdef ARENA_COSTFT
 									id2Cost[pair.second[i]+prefixNum] = ptn->ARENA_id2Cost[pair.second[i]];
@@ -390,7 +347,7 @@ private:
 			if (tempList.size() > 0)
 			{
 				treeRecord.push_back(tempList);
-				if(idRecord != nullptr)  // 不需要统计 GroupTree 对应的 id 信息
+				if(idRecord != nullptr)
 					idRecord->push_back(tempListId);
 			}
 
@@ -402,19 +359,18 @@ private:
 
 		void ARENA_showInfo()
 		{
-			// 将 TreeNode 节点的信息打印到文件中
 			std::ofstream fout("/tmp/treeNode", std::ios_base::app);
 			if(fout.is_open())
 			{
 				if(0 == m_ul)
 				{
-					fout << "根节点\n";
+					fout << "root Node\n";
 				}
 				else
 				{
 					if(nullptr == m_value)
 					{
-						fout << "TreeNode 的 m_value 为空\n";
+						fout << "TreeNode's m_value is empty\n";
 					}
 					else
 					{
@@ -432,7 +388,6 @@ private:
 		/**********************************************/
 
 		// rehydrate tree
-		// 用来取得当前节点的 local rank
 		R *
 		PrUnrank(CMemoryPool *mp, PrFn prfn, U *pU, ULONG ulChild,
 				 ULLONG ullRank)
@@ -445,8 +400,6 @@ private:
 
 			CTreeNode *ptn = NULL;
 
-// ulChild 指定了一个 Group ，此处是遍历该 Group 的不同 expression
-// 找到这个 id 的 plan 所在的 expression
 			for (ULONG ul = 0; ul < ulCandidates; ul++)  
 			{
 				ptn = (*pdrgptn)[ul];
@@ -468,14 +421,14 @@ private:
 	public:
 		/******************** ARENA ********************/
 		bool ARENA_isScalar;
-		bool ARENA_isVirtual;  // 是否是虚假的节点
-		ULONG ARENA_groupId;  // 该 TreeNode 所在原 Group 的 id
-		std::vector<std::string> ARENA_groupTree;  // 记录 group tree 的结构，暂时用于统计或测试能否实现
-		std::unordered_map<std::string, std::vector<int>> ARENA_groupTreePlus;  // key: tree 格式  value: id构成的集合
+		bool ARENA_isVirtual;
+		ULONG ARENA_groupId; 
+		std::vector<std::string> ARENA_groupTree; 
+		std::unordered_map<std::string, std::vector<int>> ARENA_groupTreePlus;
 #ifdef ARENA_COSTFT
-		std::unordered_map<int, CCost> ARENA_id2Cost;  // key: plan id  value: 相应的 cost
+		std::unordered_map<int, CCost> ARENA_id2Cost; 
 #endif
-		/***********************************************/
+		/******************** ARENA END ***************************/
 		// ctor
 		CTreeNode(CMemoryPool *mp, ULONG ul, T *value)
 			: m_mp(mp),
@@ -486,7 +439,7 @@ private:
 			  m_ulIncoming(0),
 			  m_ens(EnsUncounted)
 		{
-			m_pdrgdrgptn = GPOS_NEW(mp) CTreeNode2dArray(mp);  // 该 cost context 指向的 group 队列
+			m_pdrgdrgptn = GPOS_NEW(mp) CTreeNode2dArray(mp);
 			/******************** ARENA ********************/
 			ARENA_isScalar = false;
 			ARENA_isVirtual = false;
@@ -498,7 +451,7 @@ private:
 			{
 				ARENA_groupId = 20220610;
 			}
-			/**********************************************/
+			/******************* ARENA END ***************************/
 		}
 
 		// dtor
@@ -508,7 +461,6 @@ private:
 		}
 
 		// add child alternative
-		// 向目标 Group (ulPos 指定) 中插入一个等价的 TreeNode
 		void
 		Add(ULONG ulPos, CTreeNode *ptn)
 		{
@@ -528,7 +480,6 @@ private:
 			ptn->m_ulIncoming++;
 
 			// insert to appropriate array
-			// 找到特定 Group ，向其中插入 ptn ( CTreeNode )
 			CTreeNodeArray *pdrg = (*m_pdrgdrgptn)[ulPos];
 			GPOS_ASSERT(NULL != pdrg);
 			pdrg->Append(ptn);
@@ -542,8 +493,6 @@ private:
 		}
 
 		// number of trees rooted in this node
-		// 以该节点为根节点的树的数量(以某个 expression 为树根的树的个数)
-		// 每个 expression 中不同 Group Tree 对应的局部编号是固定的
 		ULLONG
 		UllCount()
 		{
@@ -551,37 +500,37 @@ private:
 
 			GPOS_ASSERT(EnsCounting != m_ens && "cycle in graph detected");
 
-			if (!FCounted())  // 如果还没有进行计数
+			if (!FCounted())
 			{
 				// initiate counting on current node
 				m_ens = EnsCounting;
 
 				ULLONG ullCount = 1;
 
-				ULONG arity = m_pdrgdrgptn->Size();  // m_pdrgdrgptn : 孩子队列的队列 (Group 队列)
+				ULONG arity = m_pdrgdrgptn->Size();
 				/******************** ARENA ********************/
 				#ifdef ARENA_GTFILTER
-				std::vector<std::vector<std::string>> groupTreeRecord;  // 其中每个元素对应一个 group 中的所有可能的 groupTree
-				std::vector<std::vector<std::vector<int>>>  groupTreeId;// 顶层vector:不同的Group  第二层vector:每个Group中的不同GroupTree 第三层vector:每个GroupTree对应的不同id
+				std::vector<std::vector<std::string>> groupTreeRecord;  
+				std::vector<std::vector<std::vector<int>>>  groupTreeId;
 				std::vector<int> groupTreeNum;
 #ifdef ARENA_COSTFT
 				std::vector<std::unordered_map<int, CCost>> costList;
 #endif
 				#endif
-				/**********************************************/
+				/******************** ARENA END **************************/
 				for (ULONG ulChild = 0; ulChild < arity; ulChild++)
 				{
 					ULLONG ull = UllCount(ulChild);
 					/******************** ARENA ********************/
 					#ifdef ARENA_GTFILTER
-					groupTreeNum.push_back((int)ull);  // 记录每个 Group 中子表达式的数量
+					groupTreeNum.push_back((int)ull);
 #ifdef ARENA_COSTFT
-					ARENA_TreeCount(ulChild, groupTreeRecord, &groupTreeId, &costList);  // 统计该 group 中不同 group 树的数量
+					ARENA_TreeCount(ulChild, groupTreeRecord, &groupTreeId, &costList);
 #else
-					ARENA_TreeCount(ulChild, groupTreeRecord, &groupTreeId, nullptr);  // 统计该 group 中不同 group 树的数量
+					ARENA_TreeCount(ulChild, groupTreeRecord, &groupTreeId, nullptr);
 #endif
 					#endif
-					/**********************************************/
+					/******************** ARENA END **************************/
 					if (0 == ull)
 					{
 						// if current child has no alternatives, the parent cannot have alternatives
@@ -594,7 +543,6 @@ private:
 				}
 
 				/******************** ARENA ********************/
-				// 生成每个 TreeNode 的结构
 				#ifdef ARENA_GTFILTER
 				if(ARENA_isScalar)
 				{
@@ -602,47 +550,46 @@ private:
 				}
 				else
 				{
-					if(groupTreeRecord.size() == 0)  // 没有子 group
+					if(groupTreeRecord.size() == 0)
 					{
-						std::string temp = "[[]]";  // 没有子 group 说明应该是扫描操作符，需要将表名考虑进去
+						std::string temp = "[[]]";
 						ARENA_groupTree.push_back(temp);
 						ARENA_groupTreePlus["[[]]"] = std::vector<int>{1};
 #ifdef ARENA_COSTFT
 						std::vector<CCost*> tempArray;
-						ARENA_id2Cost[1] = m_value->CostCompute(m_mp, tempArray);  // CMemoryPool * 和 CCostArray *
+						ARENA_id2Cost[1] = m_value->CostCompute(m_mp, tempArray);  
 #endif
 					}
-					else  // 存在子 group ，对所有子 group 进行组合
+					else 
 					{
 						std::string prefix = "[";
-						if(ARENA_isVirtual)  // 如果是虚假节点，不添加 "[]"
+						if(ARENA_isVirtual)
 						{
 							prefix = "";
 						}
 
 						ARENA_groupTree.push_back(prefix);
-						std::vector<std::vector<std::vector<int>>> ARENA_recordId;  // 记录每个 GroupTree 对应的 编号序列，std::vector<int>是一个编号组合
+						std::vector<std::vector<std::vector<int>>> ARENA_recordId; 
 						ARENA_recordId.resize(1);
-						/**************************************************/// 需要更新 ARENA_TreeCount 函数返回不同 Group Tree 结构对应的不同 id
-						for(std::size_t i=0;i<groupTreeRecord.size();i++)  // 遍历每个 group
+
+						for(std::size_t i=0;i<groupTreeRecord.size();i++)
 						{
 							std::size_t length = ARENA_groupTree.size();
-							for(std::size_t j=0;j<length;j++)  // 对已有的每个字符串
+							for(std::size_t j=0;j<length;j++) 
 							{
-								// 前 l-1个新元素加入到末尾
 								std::size_t k = 0;
-								for(;k<groupTreeRecord[i].size()-1;k++)  // 遍历每个 group 下的不同group tree
+								for(;k<groupTreeRecord[i].size()-1;k++)
 								{
 									ARENA_groupTree.push_back(ARENA_groupTree[j] + groupTreeRecord[i][k]);
 									ARENA_recordId.push_back(ARENA_recordId[j]);
 									ARENA_recordId.back().push_back(groupTreeId[i][k]);
 								}
-								// 最后一个新元素在原位置替换
+
 								ARENA_groupTree[j] = ARENA_groupTree[j] + groupTreeRecord[i][k];
 								ARENA_recordId[j].push_back(groupTreeId[i][k]);
 							}
 						}
-						// 如果不是虚假节点，在最后添加 ']'
+
 						if(!ARENA_isVirtual)
 						{
 							for(std::size_t i=0;i<ARENA_groupTree.size();i++)
@@ -651,37 +598,20 @@ private:
 							}
 						}
 						
-						// 生成 ARENA_gropuTreePlus 的信息
-						if(ARENA_groupTree.size() != ARENA_recordId.size())  // GroupTree的数量一定等于相应编号序列的数量
+						for(int i=1;i<(int)groupTreeNum.size();i++)
 						{
-							std::ofstream fout("/tmp/ARENA_error", std::ios_base::app);
-							fout << "在做 GroupTree 到序号的映射时, GroupTree的数量与编号序列的数量不相等: GroupTree " << ARENA_groupTree.size() << "    编号序列 " << ARENA_recordId.size() << '\n';
-							fout.close();
+							groupTreeNum[i] *= groupTreeNum[i-1];
 						}
-						else  // 正常情况下计算每个 GroupTree 对应的编号
-						{
-							// 计算每个位置的后续组合数
-							// 右边是低位
-							// for(int i=((int)groupTreeNum.size())-2;i>=0;i--)
-							// {
-							// 	groupTreeNum[i] *= groupTreeNum[i+1];
-							// }
-							// 左边是低位
-							for(int i=1;i<(int)groupTreeNum.size();i++)
-							{
-								groupTreeNum[i] *= groupTreeNum[i-1];
-							}
 
-							for(std::size_t i=0;i<ARENA_groupTree.size();i++)
-							{
-								std::vector<int> tempIdList;
+						for(std::size_t i=0;i<ARENA_groupTree.size();i++)
+						{
+							std::vector<int> tempIdList;
 #ifdef ARENA_COSTFT
-								ARENA_getIdList(ARENA_recordId[i], groupTreeNum, tempIdList, &costList);
+							ARENA_getIdList(ARENA_recordId[i], groupTreeNum, tempIdList, &costList);
 #else
-								ARENA_getIdList(ARENA_recordId[i], groupTreeNum, tempIdList, nullptr);
+							ARENA_getIdList(ARENA_recordId[i], groupTreeNum, tempIdList, nullptr);
 #endif
-								ARENA_groupTreePlus[ARENA_groupTree[i]] = tempIdList;
-							}
+							ARENA_groupTreePlus[ARENA_groupTree[i]] = tempIdList;
 						}
 					}
 				}
@@ -696,7 +626,6 @@ private:
 		}
 
 		// check if count has been determined for this node
-		// 检查这个节点的计数是否已经决定
 		BOOL
 		FCounted() const
 		{
@@ -711,9 +640,6 @@ private:
 		}
 
 		// unrank tree of a given rank with a given rehydrate function
-		// 利用给定的 rehydrate 函数，通过给定的编号获取 plan tree.
-		// 这个函数用来确定 ulChild 的值，之后调用 prUnrank(5) 找到正确的plan
-		// 这一步用来取得每个子 Group 的 sub_rank
 		R *
 		PrUnrank(CMemoryPool *mp, PrFn prfn, U *pU, ULLONG ullRank)
 		{
@@ -728,16 +654,15 @@ private:
 			}
 			else
 			{
-				DrgPr *pdrg = GPOS_NEW(mp) DrgPr(mp);  // DrgPr 结果指针的队列，CExpression 的队列
+				DrgPr *pdrg = GPOS_NEW(mp) DrgPr(mp);
 
 				ULLONG ullRankRem = ullRank;
 
-				// 孩子队列的长度
 				ULONG ulChildren = m_pdrgdrgptn->Size();
-				// 确定每个 group 的 local rank
+
 				for (ULONG ulChild = 0; ulChild < ulChildren; ulChild++)
 				{
-					ULLONG ullLocalCount = UllCount(ulChild);  // 给定孩子，获得树的数量
+					ULLONG ullLocalCount = UllCount(ulChild);
 					GPOS_ASSERT(0 < ullLocalCount);
 					ULLONG ullLocalRank = ullRankRem % ullLocalCount;
 
@@ -750,7 +675,7 @@ private:
 			}
 			// ARENA_showInfo();
 
-			return pr;  // 类型是  CExpression
+			return pr;
 		}
 
 #ifdef GPOS_DEBUG
@@ -792,18 +717,15 @@ private:
 	ULONG m_ulCountNodes;
 
 	// counter for links
-	// 所有 links 的计数
 	ULONG m_ulCountLinks;
 
 	// rehydrate function
 	PrFn m_prfn;
 
 	// universal root (internally used only)
-	// 统一的根节点
 	CTreeNode *m_ptnRoot;
 
 	// map of all nodes
-	// 节点的映射表，由 cost context 映射到 TreeNode
 	typedef gpos::CHashMap<T, CTreeNode, HashFn, EqFn, CleanupNULL,
 						   CleanupDelete<CTreeNode> >
 		TMap;
@@ -812,7 +734,6 @@ private:
 		TMapIter;
 
 	// map of created links
-	// 边的映射表，key: StreeLink  value: BOOL
 	typedef CHashMap<STreeLink, BOOL, STreeLink::HashValue, STreeLink::Equals,
 					 CleanupDelete<STreeLink>, CleanupDelete<BOOL> >
 		LinkMap;
@@ -826,10 +747,8 @@ private:
 	ULLONG UllCount(CTreeNode *ptn);
 
 	// Convert to corresponding treenode, create treenode as necessary
-	// 根据需要创建 treenode 节点
 	CTreeNode *
-	// Ptn(const T *value)  // 原来的声明
-	Ptn(T *value, bool ARENA_isScalar)  // 针对 ARENA 系统的声明
+	Ptn(T *value, bool ARENA_isScalar) 
 	{
 		GPOS_ASSERT(NULL != value);
 		CTreeNode *ptn = const_cast<CTreeNode *>(m_ptmap->Find(value));
@@ -838,7 +757,6 @@ private:
 		{
 			ptn = GPOS_NEW(m_mp) CTreeNode(m_mp, ++m_ulCountNodes, value);
 			ptn->ARENA_isScalar = ARENA_isScalar;
-			// (void) m_ptmap->Insert(const_cast<T *>(value), ptn);
 			(void) m_ptmap->Insert(value, ptn);
 		}
 
@@ -889,13 +807,12 @@ public:
 
 	// insert edge as n-th child
 	void
-	Insert(T *ptParent, ULONG ulPos, T *ptChild, bool isScalar=false)  // 针对 ARENA 系统的定义
-	// Insert(const T *ptParent, ULONG ulPos, const T *ptChild)  // 原来的定义
+	Insert(T *ptParent, ULONG ulPos, T *ptChild, bool isScalar=false)
 	{
 		GPOS_ASSERT(ptParent != ptChild);
 
 		// exit function if link already exists
-		STreeLink *ptlink = GPOS_NEW(m_mp) STreeLink(ptParent, ulPos, ptChild);  // 父节点和子节点之间的链接关系
+		STreeLink *ptlink = GPOS_NEW(m_mp) STreeLink(ptParent, ulPos, ptChild);
 		if (NULL != m_plinkmap->Find(ptlink))
 		{
 			GPOS_DELETE(ptlink);
@@ -924,7 +841,6 @@ public:
 		GPOS_ASSERT(NULL != m_ptnRoot);
 
 		// add logical root as 0-th child to global root
-		// 逻辑根节点作为全局根节点的第 0 个孩子
 		m_ptnRoot->Add(0 /*ulPos*/, Ptn(value));
 	}
 
@@ -933,14 +849,13 @@ public:
 	UllCount()
 	{
 		// first, hookup all logical root nodes to the global root
-		// 第一步，将所有的逻辑根节点连接到全局根上
 		TMapIter mi(m_ptmap);
 		ULONG ulNodes = 0;
-		for (ulNodes = 0; mi.Advance(); ulNodes++)  // 这里遍历了所有的 TreeNode ，然后将入边数量为0的 TreeNode 作为了全局 root 上
+		for (ulNodes = 0; mi.Advance(); ulNodes++)
 		{
 			CTreeNode *ptn = const_cast<CTreeNode *>(mi.Value());
 
-			if (0 == ptn->UlIncoming())  // (UlIncoming: 每个节点入边的数量)
+			if (0 == ptn->UlIncoming())
 			{
 				// add logical root as 0-th child to global root
 				m_ptnRoot->Add(0 /*ulPos*/, ptn);
@@ -960,7 +875,6 @@ public:
 	// unrank a specific tree
 	// ullRank: planId
 	// pU: CDrvdPropCtxtPlan
-	// 对外开放的接口，根据 id 生成树结构
 	R *
 	PrUnrank(CMemoryPool *mp, U *pU, ULLONG ullRank) const
 	{
