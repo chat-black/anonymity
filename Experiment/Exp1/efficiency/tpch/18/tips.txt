@@ -1,0 +1,30 @@
+
+*the number of informative plans: 10
+plan interestringness: 0.367
+plan id:
+0	403	32	394	36	34	26	24	19	21	363	
+*total time(ms): 57
+
+*the number of informative plans: 20
+plan interestringness: 0.361
+plan id:
+0	403	32	394	36	34	26	24	19	21	363	399	20	18	383	381	355	353	463	461	829	
+*total time(ms): 59
+
+*the number of informative plans: 30
+plan interestringness: 0.357
+plan id:
+0	403	32	394	36	34	26	24	19	21	363	399	20	18	383	381	355	353	463	461	829	407	1	4	2	35	33	25	23	1049	1047	
+*total time(ms): 66
+
+*the number of informative plans: 40
+plan interestringness: 0.353
+plan id:
+0	403	32	394	36	34	26	24	19	21	363	399	20	18	383	381	355	353	463	461	829	407	1	4	2	35	33	25	23	1049	1047	1021	1019	1129	1127	427	425	396	16	14	10	
+*total time(ms): 76
+
+*the number of informative plans: 50
+plan interestringness: 0.352
+plan id:
+0	403	32	394	36	34	26	24	19	21	363	399	20	18	383	381	355	353	463	461	829	407	1	4	2	35	33	25	23	1049	1047	1021	1019	1129	1127	427	425	396	16	14	10	31	29	8	6	369	373	341	13	5	3	
+*total time(ms): 81
