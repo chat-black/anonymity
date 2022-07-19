@@ -6921,75 +6921,69 @@ void FindKCost() {
 	gARENAK = 5;
 }
 
-// 测试不同方法（随机选择、基于 cost 选择等方法）再选择相同数量的 AP 
-// 时花费的时间和最终效果的对比实验
-void ARENATimeExp3() {
+// get a file name to output the execution information
+std::string getLogFileName()
+{
+	std::string res("/home/")
+
+	char * userName = nullptr;
+	userName = getlogin();  // get the user name
+	if(userName != nullptr)
+	{
+		res += userName;
+		res += "/timeRecord.txt";
+	}
+	else
+	{
+		res = "/tmp/timeRecord.txt";
+	}
+
+	return res;
+}
+
+// test the effectiveness and efficiency of TIPS
+void ARENATimeExp3()
+{
 	plan_trees_hash.reserve(plan_buffer.size());
-	std::ofstream fout_time("/home/wang/timeRecord.txt");
+
+	std::string logFile = getLogFileName();  // used to output execution informative
+	std::ofstream fout_time(logFile);
 	if (fout_time.is_open())
 	{
 		for (std::size_t tempPlanNum = 10; tempPlanNum < 60; tempPlanNum += 10)
 		{
-			fout_time << "\n*当前要选出的候选计划的数量为: " << tempPlanNum << '\n';
-			auto start = std::chrono::steady_clock::now();
-			auto startAll = start;
-			// 初始化的第零阶段，生成 plan_tree 结构
+			fout_time << "\n*the number of informative plans is: " << tempPlanNum << '\n';
+			auto start = std::chrono::steady_clock::now();  // record time
 			for (std::size_t i = 0; i < plan_buffer_for_exp.size(); i++)
 			{
 				plan_trees_hash.push_back(PlanTreeHash<CExpression>());
 				plan_trees_hash[i].init(plan_buffer_for_exp[i], 0);
+				plan_trees_hash[i].init(NULL, 1);
+				plan_trees_hash[i].init(NULL, 2);
+				plan_trees_hash[i].init(NULL, 3);
 
-				// 设置 cost 的最大值
+				// find the max cost
 				if (plan_trees_hash[i].root->data.cost > max_cost)
 				{
 					max_cost = plan_trees_hash[i].root->data.cost;
 				}
 			}
-			fout_time << "第一阶段(初始化PlanTreeNode结构体)初始计划的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第一阶段，生成一棵树的所有统计信息
-			for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init1
-			{
-				plan_trees_hash[i].init(NULL, 1);
-			}
-			fout_time << "    生成子树统计信息的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第二阶段，生成节点内容组成的字符串，用于计算内容差异
-			for (std::size_t i = 0; i < plan_trees_hash.size(); i++)
-			{
-				plan_trees_hash[i].init(NULL, 2);
-			}
-			fout_time << "    取得由节点内容组成的字符串的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第三阶段，计算自己与自己的树核
-			for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init3
-			{
-				plan_trees_hash[i].init(NULL, 3);
-			}
-			fout_time << "    计算与自己的距离的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
 			max_cost -= plan_trees_hash[0].root->data.cost;
 			
 
-			// 当使用旧方法时，则用 hash 表存储 distance
+			// if we use the B-TIPS-Basic method, we use a hash table to record the distance
             std::unordered_map<int, double> dist_record;
-			for(std::size_t i=1;i<plan_trees.size();++i)
+			for(std::size_t i=1;i<plan_trees.size();++i)  // this 'for' statement is used to compute relevance
 			{
 				double temp_dist = plan_trees_hash[i].distance_with_best(plan_trees_hash[0]);
 				dist_record[i] = temp_dist;
 			}
 
-			// // 当使用新方法时，需要用有限队列的形式存储 distance
+			// if we use the B-TIPS-Heap method, we use a Max-heap to record the distance
 			// std::priority_queue<MinDist> dist_record;
-			// // 初始化的最终阶段，计算每个 plan 与 best_plan 的结构差异、内容差异和cost差异
-			// // 这个代码块用来计算 relevance
 			// {
 			// 	double temp_dist;
-			// 	for (std::size_t i = 1; i < plan_trees_hash.size(); ++i)
+			// 	for (std::size_t i = 1; i < plan_trees_hash.size(); ++i)  // to calculate relevance
 			// 	{
 			// 		temp_dist = plan_trees_hash[i].distance_with_best(plan_trees_hash[0]);
 			// 		MinDist temp;
@@ -6999,79 +6993,69 @@ void ARENATimeExp3() {
 			// 	}
 			// }
 			
-			// 统计寻找最终结果所用时间
-			fout_time << "计算每个计划与最优计划距离的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
+			std::vector<int> res;  // record the result plan id
+			double min_dist = 0.0;  // record the plan interestingness
 
-			std::vector<int> res;
-			double min_dist = 0.0;
-			// min_dist = FindKDiffMethodExp(plan_trees_hash, res, dist_record, tempPlanNum);
-			FindKTimeExpOld(plan_trees_hash, res, dist_record, tempPlanNum);
+			// min_dist = FindKDiffMethodExp(plan_trees_hash, res, dist_record, tempPlanNum);  // B-TIPS-H
+			FindKTimeExpOld(plan_trees_hash, res, dist_record, tempPlanNum);  // B-TIPS-B
+
 			fout_time << std::setiosflags(std::ios::fixed)<<std::setprecision(3);
-			fout_time << "*最小距离为: " << min_dist << '\n';
-			fout_time << "查找k个目标值的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			fout_time << "最终找到结果的编号为：" << '\n';
-			for(auto i: res){
-				fout_time << i << '\t';
-			}
-			fout_time << '\n';
+			fout_time << "*plan interestingness: " << min_dist << '\n';
+			fout_time << "*total time(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
 
-			// ARENA_result(res);  // 将结果保留到文件中
-			fout_time << "*程序整体的执行时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startAll)).count() << std::endl;
-
-			// 重置全局变量
+			// reset the global variables
 			plan_trees_hash.clear();
 			new_add = 0;
 			max_cost = 0.0;
 		}
-
 		fout_time.close();
 	}
 }
 
+// test the effectiveness and efficiency of Random
 void ARENATimeExp3Random()
 {
-	std::ofstream fout_time("/home/wang/timeRecord.txt");
-	std::vector<int> res;
+	std::string logFile = getLogFileName();
+	std::ofstream fout_time(logFile);
+	std::vector<int> res;  // record the result plan id
+
 	if (fout_time.is_open())
 	{
 		for (std::size_t tempPlanNum = 10; tempPlanNum < 60; tempPlanNum += 10)
 		{
-			fout_time << "\n*当前要选出的候选计划的数量为: " << tempPlanNum << '\n';
+			fout_time << "\n*the number of informative plan is: " << tempPlanNum << '\n';
 			auto start = std::chrono::steady_clock::now();
 			fout_time << std::setiosflags(std::ios::fixed)<<std::setprecision(3);
 			double min_dist = FindKRandomExp(plan_buffer_for_exp, res, tempPlanNum);
-			fout_time << "*最小距离为: " << min_dist << '\n';
-			fout_time << "*程序整体的执行时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
+			fout_time << "*plan interestingness: " << min_dist << '\n';
+			fout_time << "*total time(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
+
+			// reset the global variables
 			plan_trees_hash.clear();
+			res.clear();
 			max_cost = 0.0;
 		}
 		fout_time.close();
 	}
 }
 
+// test the effectiveness and efficiency of Cost
 void ARENATimeExp3Cost()
 {
-	std::ofstream fout_time("/home/wang/timeRecord.txt");
+	std::string logFile = getLogFileName();
+	std::ofstream fout_time(logFile);
 	std::vector<int> res;
 	if (fout_time.is_open())
 	{
 		for (std::size_t tempPlanNum = 10; tempPlanNum < 60; tempPlanNum += 10)
 		{
-			fout_time << "\n*当前要选出的候选计划的数量为: " << tempPlanNum << '\n';
+			fout_time << "\n*the number of informative plan is: " << tempPlanNum << '\n';
 			auto start = std::chrono::steady_clock::now();
 			FindKCostExp(plan_buffer_for_exp, res, tempPlanNum);
-
-			// fout_time << "选出的 plan id 和 cost 为: ";
-			// for(auto i: res)
-			// {
-			// 	fout_time << "  (" << i << " , " << plan_buffer_for_exp[i]->Cost().Get() << ')';
-			// }
-			// fout_time << '\n';
 			fout_time << std::setiosflags(std::ios::fixed)<<std::setprecision(3);
-			fout_time << "*最小距离为: " << ARENACalculateDist(res) << '\n';
+			fout_time << "*plan interestingness: " << ARENACalculateDist(res) << '\n';
+			fout_time << "*total time(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
 
-			fout_time << "程序整体的执行时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
 			plan_trees_hash.clear();
 			res.clear();
 			max_cost = 0.0;
