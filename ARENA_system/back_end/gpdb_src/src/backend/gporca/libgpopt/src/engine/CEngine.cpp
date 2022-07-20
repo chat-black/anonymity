@@ -583,735 +583,6 @@ int editDistG(std::vector<std::string*> word1, std::vector<std::string*> word2)
 	return D[n][m];
 }
 
-
-
-///**************************************************/
-///
-/// 与 suffix tree 相关的代码
-///
-///**************************************************/
-struct  Key
-{
-	int nodeId;
-	char c;  // 因为字符集一定是 ascii 字符集，所以使用 char 类型
-};
-
-// 节点类型的定义
-struct Node
-{
-	int suffixNode;  // suffix link 节点
-	int lvs;  // 叶子节点的数量
-
-	Node() : suffixNode(0), lvs(0) {};
-
-	~Node() { }
-};
-
-
-/*
-* 构建一颗 suffix tree 所需的全局信息
-*
-* 树的结构通过 nodeArray , edgeHash 以及 node2edge 来维护
-* 	nodeArray 用来存储所有的节点
-*	node2edge 记录父节点指向的所有子节点信息
-*/
-struct suffixTreeContext
-{
-	// 用于记录 Matching Statistic 的数据结构
-	struct matchStatistc
-	{
-		std::size_t length;  // 匹配的长度
-		int ceil;  // 匹配的节点
-
-		matchStatistc() : length(0), ceil(0) {};
-	};
-
-	Node* nodeArray;  // 存储节点的列表
-	int inputLength;
-	int noOfNodes;
-	double self_kernel;
-	std::string s;
-	std::unordered_map<long, Edge> edgeHash;  // 记录边的映射表：key由两部分构成（1、开始节点  2、节点后的一个字符）
-	std::unordered_map<int, std::unordered_set<int>> node2edge;  // 记录每个顶点对应的子节点编号列表
-
-	suffixTreeContext() : nodeArray(NULL), inputLength(0), noOfNodes(0), self_kernel(0.0) {};
-
-	void init(std::string s_in)
-	{
-		s = s_in + '$';  // 增加尾部字符 '$'，防止节点计数出错
-		inputLength = s.size() - 1;
-		noOfNodes = 1;
-		nodeArray = new Node[2 * inputLength];
-	}
-
-	~suffixTreeContext()
-	{
-		delete[] nodeArray;
-	}
-
-	// node is the starting node and c is the ASCII input char.
-	inline static long returnHashKey(int nodeId, char c)
-	{
-		long temp = nodeId;
-		temp = temp << 8;
-		return temp + c;
-	}
-
-	Edge findEdge(int node, char c)
-	{
-		long key = returnHashKey(node, c);
-		std::unordered_map<long, Edge>::const_iterator search = edgeHash.find(key);
-		if (search != edgeHash.end()) {
-			return edgeHash.at(key);
-		}
-
-		return Edge();  // 没有找到边，则返回一条新边
-	};
-
-	void insert(Edge e)
-	{
-		long key = returnHashKey(e.startNode, s[e.startLabelIndex]);
-		edgeHash.insert(std::make_pair(key, e));
-		node2edge[e.startNode].insert(e.endNode);
-	}
-
-	void remove(Edge e)
-	{
-		long key = returnHashKey(e.startNode, s[e.startLabelIndex]);
-		node2edge[e.startNode].erase(e.endNode);
-		edgeHash.erase(key);
-	}
-
-	// 在剪枝的过程中，更新某条边的终点位置
-	void updateEdge(int startNode, char c, int endIndex) {
-		long key = returnHashKey(startNode, c);
-		std::unordered_map<long, Edge>::iterator search = edgeHash.find(key);
-		search->second.endLabelIndex = endIndex;
-	}
-
-	// 计算每个节点下的叶子节点的数量
-	int calculate_node_num(int nodeId = 0)
-	{
-		// 如果这个节点下面还有子节点
-		if (node2edge.find(nodeId) != node2edge.end() && node2edge[nodeId].size())
-		{
-			// 递归地计算下面所有子节点的个数
-			for (auto id : node2edge[nodeId])
-			{
-				nodeArray[nodeId].lvs += calculate_node_num(id);
-			}
-		}
-		// 该节点就是叶子节点，值为1
-		else
-		{
-			nodeArray[nodeId].lvs = 1;
-		}
-		return nodeArray[nodeId].lvs;
-	}
-
-	// 判断字符串是否为 树结构
-	bool judge_tree(std::string& str)
-	{
-		if (str.size() % 2 == 0  && str.size() > 0)
-		{
-			int lbracket = 0;  // 左括号的数量
-			int rbracket = 0;
-			std::vector<char> stack = { '$' };
-			for(auto c: str)
-			{
-				if (lbracket == rbracket && lbracket != 0)  // 已经找到树结构，并且还有字符
-					return false;
-				if (lbracket < rbracket)
-					return false;
-				switch (c)
-				{
-				case '[':
-					lbracket++;
-					break;
-				case ']':
-					rbracket++;
-					break;
-				default:
-					return false;
-				}
-			}
-
-			if (lbracket == rbracket && lbracket > 0) // 存在树结构
-				return true;
-			else
-				return false;
-		}
-		else
-			return false;
-	}
-
-	// 寻找某一字符串在该后缀树中匹配的最大长度以及 ceil 节点
-	// start 和 end 用于指示子串的内容，两端都包含
-	void getMaxLength(std::string &target, std::size_t start, std::size_t end, matchStatistc & ms)
-	{
-		Edge e = findEdge(0, target[start]);
-		if (e.startNode != -1)  // 找到了这条边
-		{
-			std::size_t i = 0;
-			int iter = 0;
-			while (start + i <= end)
-			{
-				iter = 0;
-				// 在这条边上尽量多的匹配
-				while (e.startLabelIndex + iter <= e.endLabelIndex)
-				{
-					if (s[e.startLabelIndex + iter] == target[start + i])  // 当前字符匹配，移动到下一个字符
-					{
-						++iter; ++i;
-					}
-					else // 字符已经不匹配，更新 len 并且返回
-					{
-						ms.length += iter;
-						ms.ceil = e.endNode;
-						return;
-					}
-				}
-
-				// 上面的一条边已经匹配完，寻找该边的 endNode 的子边
-				ms.length += e.endLabelIndex - e.startLabelIndex + 1;
-				ms.ceil = e.endNode;
-				e = findEdge(e.endNode, target[start + i]);
-				if (-1 == e.startNode)  // 没有找到
-				{
-					return;
-				}
-			}
-		}
-		else
-		{
-			// 没有找到这条边
-			ms.ceil = 0;
-			ms.length = 0;
-		}
-	}
-
-	// 计算 other 关于当前后缀树的 matching statistic 信息
-	void generateMatchStatistic(suffixTreeContext & other, std::vector<matchStatistc> & ms)
-	{
-		std::string temp_s = other.s.substr(0, other.s.size()-1);
-		for (std::size_t i = 0; i < other.s.size(); ++i)
-		{
-			getMaxLength(temp_s, i, temp_s.size() - 1, ms[i]);
-			// std::cout << i << ": " << ms[i].length << "\t" << ms[i].ceil << std::endl;
-		}
-	}
-
-	// 计算 other 关于当前后缀树的 matching statistic 信息（线性时间复杂度的算法）
-	void generateMatchStatistic_fast(suffixTreeContext& other, std::vector<matchStatistc>& ms)
-	{
-		int startNode = 0;  // 初始是从根节点开始
-		std::size_t j = 0, k = 0;
-		std::string& T = other.s;
-		T.pop_back();
-		Edge e;
-		for (std::size_t i = 0; i < T.size(); ++i)
-		{
-			e = findEdge(startNode, T[j]);
-			while (j < k && e.startNode != -1 && j + e.size() <= k)  // 3.1 部分的代码
-			{
-				startNode = e.endNode;
-				j += e.size();
-				e = findEdge(startNode, T[j]);
-			}
-
-			if (j == k)  // 3.2 
-			{
-				while (e.startNode != -1 && T[k] == s[e.startLabelIndex + k -j] && k < T.size())
-				{
-					++k;
-					if (j + e.size() == k)
-					{
-						startNode = e.endNode;
-						j = k;
-						e = findEdge(startNode, T[j]);
-					}
-				}
-			}
-
-			// 设置相应的值
-			ms[i].length = k - i;
-			if (j == k)
-			{
-				ms[i].ceil = startNode;
-			}
-			else
-			{
-				ms[i].ceil = findEdge(startNode, T[j]).endNode;
-			}
-
-			// 为下一轮迭代做准备
-			if (0 == startNode)
-			{
-				if (j == k && k < T.size())
-				{
-					++j; ++k;
-				}
-				else
-				{
-					++j;
-				}
-			}
-			else
-			{
-				startNode = nodeArray[startNode].suffixNode;
-			}
-		}
-		T.append(1, '$');
-	}
-
-	// 计算与自己之间的距离 (不能只是计算子串的个数，需要计算那些符合树结构的子串，因此需要传递前缀)
-	// Args: rootNode 根节点的编号
-	//		 prefix 当前节点的祖先节点已经有的前缀
-	//		 lbracket_in 当前遇到的左括号的个数
-	//		 rbracket_in 当前遇到的右括号的个数
-	void distanceSelf(int rootNode, const std::string& prefix, int lbracket_in, int rbracket_in)
-	{
-		// 遍历每一种可能
-		for(int j=0;j<2;j++)
-		{
-			char c = edgePrefix[j];
-			Edge e = findEdge(rootNode, c);
-			if(e.valid())  // 有效边
-			{
-				int num = nodeArray[e.endNode].lvs;  // 在这条边上，子串出现的次数
-				num = num * num;
-				std::string pre = prefix;  // 避免修改 prefix
-				int lbracket = lbracket_in;
-				int rbracket = rbracket_in;
-				bool treeFlag = false;  // 是否已经找到子树，找到子树后，这条边下的子边都不需要再继续遍历了
-
-				for (int i=e.startLabelIndex; i <= e.endLabelIndex; i++)
-				{
-					pre += s[i];  // 每加一个字符都是一种子串的可能
-					switch (s[i])
-					{
-					case '[':
-						lbracket++;
-						break;
-					
-					default:
-						rbracket++;
-						break;
-					}
-					if (lbracket == rbracket && !treeFlag)
-					{
-						treeFlag = true;
-						self_kernel += num;
-					}
-				}
-				if (!treeFlag)  // 没有找到子树才需要遍历
-					distanceSelf(e.endNode, pre, lbracket, rbracket);  // 递归到子节点
-			}
-		}
-	}
-
-	// 计算两棵后缀树之间的距离
-	double distance(suffixTreeContext& other)
-	{
-		std::vector<matchStatistc> ms;
-		ms.resize(other.s.size());
-		generateMatchStatistic(other, ms);
-		// generateMatchStatistic_fast(other, ms);
-
-		// 寻找所有的子字符串
-		std::unordered_map<std::string, int> sub_string;
-		std::unordered_map<std::string, int> substr_node_map;  // 每个子串与所在节点的对应关系
-		for (std::size_t i = 0; i < other.s.size(); ++i)
-		{
-			std::size_t end = i + ms[i].length - 1;  // 子串的终点，包含该终点
-			for (std::size_t j = i+1; j <= end; ++j)
-			{
-				std::string temp = other.s.substr(i, j-i+1);
-				if (judge_tree(temp))  // 如果判断为子树结构
-				{
-					sub_string[temp]++;
-					substr_node_map[temp] = ms[i].ceil;
-				}
-			}
-		}
-
-		// 根据所有子串计算最终距离
-		double res = 0.0;
-		for (auto& p : sub_string)
-		{
-			res += (double)p.second * nodeArray[substr_node_map[p.first]].lvs;  // p.second 取得该子串在 other 中出现的次数，substr_node_map 则取得子串在 当前字符串中出现的次数
-		}
-		
-		// 标准化
-		if (self_kernel == 0.0)  // 第一次计算与自己的距离，即计算 self_kernel 的时候
-		{
-			return res;
-		}
-		else
-		{
-			double temp  = self_kernel * other.self_kernel;
-			temp = sqrt(temp);
-			res = res / temp;
-			return sqrt(1-res);
-		}
-	}
-
-
-	// 一些收尾工作，包括：1、计算每个节点的叶子数量   2、计算自己与自己的相似度
-	void finishing_work()
-	{
-		calculate_node_num();
-		self_kernel = distance(*this);
-	}
-
-	void finishing_work1()
-	{
-		calculate_node_num();
-	}
-
-	void finishing_work2()
-	{
-		Edge e = findEdge(0, '[');
-		if (e.valid())	// 有效边
-		{
-			int num = nodeArray[e.endNode].lvs;	 // 在这条边上，子串出现的次数
-			num = num * num;
-			std::string pre;
-			int lbracket = 0;
-			int rbracket = 0;
-			bool treeFlag = false;
-			for (int i = e.startLabelIndex; i <= e.endLabelIndex; i++)
-			{
-				pre += s[i];  // 每加一个字符都是一种子串的可能
-				switch(s[i]){
-					case '[':
-						lbracket++;
-						break;
-					default:
-						rbracket++;
-						break;
-				}
-				if (lbracket == rbracket && !treeFlag)
-				{
-					treeFlag = true;
-					self_kernel += num;
-				}
-			}
-			if(!treeFlag)
-				distanceSelf(e.endNode, pre, lbracket, rbracket);  // 递归到子节点
-		}
-	}
-
-};
-
-Edge::Edge(int start, int first, int last, suffixTreeContext* context) :
-	startNode(start),
-	startLabelIndex(first),
-	endLabelIndex(last)
-{
-	endNode = context->noOfNodes++;
-}
-
-
-class suffixTree
-{
-public:
-	int rootNode;   // Origin of the suffix tree
-	int startIndex; // Starting index of the string represented. 字符串表示的开始索引
-	int endIndex;   // End index of the string represented.  字符串表示的结束索引
-	suffixTreeContext* context;
-
-	suffixTree() :
-		rootNode(0),
-		startIndex(-1),
-		endIndex(-1),
-		context(NULL) {};
-
-	suffixTree(int root, int start, int end, suffixTreeContext* context_in) :
-		rootNode(root),
-		startIndex(start),
-		endIndex(end),
-		context(context_in) {};
-
-	// Real means that the suffix string ends at a node and thus the
-	// remaining string on that edge would be an empty string.
-	// 这意味着后缀树结束于一个节点
-	bool endReal() { return startIndex > endIndex; }   // 开始索引大于结束索引
-
-	// Img means that the suffixTree of current string ends on an imaginary
-	// node, which means in between an edge. 
-	// Img 意味着当前字符串的后缀树结束于一个想象中的节点，这意味着在边之间
-	bool endImg() { return endIndex >= startIndex; }
-
-	void init(int root, int start, int end, suffixTreeContext* context_in){  // 调试用，无实际用处（与构造函数相同）
-		rootNode = root;
-		startIndex = start;
-		endIndex = end;
-		context = context_in;
-	}
-
-	void migrateToClosestParent()
-	{
-		// If the current suffix tree is ending on a node, this condition is already met.
-		// 如果当前的 suffic 树在一个节点终止，条件已经满足
-		if (endReal())
-		{
-			//     cout << "Nothing needs to be done for migrating" << endl;
-		}
-		else {
-			// 找到从根节点开始的这条边
-			Edge e = context->findEdge(rootNode, context->s[startIndex]);
-			// Above will always return a valid edge as we call this method after adding above.
-			// 上面的语句总会返回一条有效的边，因为我们
-			if (e.startNode == -1) {  // 虚拟节点
-				std::cout << rootNode << " " << startIndex << " " << context->s[startIndex] << std::endl;
-			}
-			assert(e.startNode != -1);
-			int labelLength = e.endLabelIndex - e.startLabelIndex;  // 标签的长度：end标签的索引 - start标签的索引，这个标签会不会是字符串中的字符位置
-
-			// Go down
-			while (labelLength <= (endIndex - startIndex))
-			{ // endIndex与startIndex都是 suffixTree 中的变量，代表字符串的索引
-				startIndex += labelLength + 1;  // ?
-				rootNode = e.endNode;  // 边的结束节点
-				if (startIndex <= endIndex)
-				{
-					e = context->findEdge(e.endNode, context->s[startIndex]);  // 找到从结束节点开始的边
-					if (e.startNode == -1)
-					{
-						std::cout << rootNode << " " << startIndex << " " << context->s[startIndex] << std::endl;
-					}
-					assert(e.startNode != -1);
-					labelLength = e.endLabelIndex - e.startLabelIndex;
-				}
-			}
-		}
-	}
-};
-
-
-int breakEdge(suffixTree& s, Edge& e)
-{
-	// 将旧边移除
-	s.context->remove(e);
-
-	// 构建新的边: 开始节点(rootNode), 索引的第一个位置(startLabelIndex), 索引的最后一个位置()
-	// 这是插入的最顶层的边
-	Edge* newEdge = new Edge(s.rootNode, e.startLabelIndex,
-		e.startLabelIndex + s.endIndex - s.startIndex, s.context);
-	s.context->insert(*newEdge);
-
-	// Add the suffix link for the new node.
-	// 对于新的 node，增加 suffix link
-	s.context->nodeArray[newEdge->endNode].suffixNode = s.rootNode;
-	// 对原来的边进行更改（endLabelIndex不变，改变 startLabelIndex 为新插入的节点的结束节点）
-	e.startLabelIndex += s.endIndex - s.startIndex + 1;
-	e.startNode = newEdge->endNode;
-	s.context->insert(e);
-	return newEdge->endNode;
-}
-
-// 树剪枝的主要部分
-// Args:
-//		nodeId: 当前的节点 id
-//		lbracket_in: 左括号的数量
-//		rbracket_in: 右括号的数量
-void purnTreeMain(suffixTreeContext& context, int nodeId, int lbracket_in, int rbracket_in)
-{
-	for (auto c : edgePrefix)
-	{
-		Edge e = context.findEdge(nodeId, c);
-		bool purgeFlag = false;
-		if (e.valid())
-		{
-			int lbracket = lbracket_in;
-			int rbracket = rbracket_in;
-			// 遍历其中的每个字符，直到符合树结构（每一条边上可能有多个字符）
-			for (int i = e.startLabelIndex; i <= e.endLabelIndex; i++)
-			{
-				switch (context.s[i])
-				{
-				case '[':
-					lbracket++;
-					break;
-				case ']':
-					rbracket++;
-					break;
-				}
-
-				if (lbracket == rbracket)  // 已经符合树结构，剪枝并收缩边
-				{
-					// 剪枝
-					Edge tempE = context.findEdge(e.endNode, ']');
-					if (tempE.valid())
-					{
-						context.remove(tempE);
-					}
-					tempE = context.findEdge(e.endNode, '[');
-					if (tempE.valid())
-					{
-						context.remove(tempE);
-					}
-					
-					// 收缩
-					e.endLabelIndex = i;
-					context.updateEdge(e.startNode, context.s[e.startLabelIndex], i);
-					purgeFlag = true;
-					break;
-				}	
-			}
-			if (!purgeFlag)  // 没有进行剪枝
-			{
-				purnTreeMain(context, e.endNode, lbracket, rbracket);
-			}
-		}
-	}
-}
-
-
-// 对树进行剪枝，去除其中不可能为树的结构
-void purnTree(suffixTree& tree)
-{
-	// 首先去除一定不可能的 ']' 边
-	auto& context = *(tree.context);
-	Edge e = context.findEdge(tree.rootNode, ']');
-	context.remove(e);
-
-	// 迭代，去除每个不可能的边，同时对有些边进行收缩（因为有些边可能会出现已经符合树结构，但是仍然还有的情况）
-	e = context.findEdge(tree.rootNode, '[');
-	if (e.valid())
-	{
-		int lbracket = 0;
-		int rbracket = 0;
-		bool purgeFlag = false;
-		// 遍历其中的每个字符，直到符合树结构
-		for (int i = e.startLabelIndex; i <= e.endLabelIndex; i++)
-		{
-			switch (context.s[i])
-			{
-			case '[':
-				lbracket++;
-				break;
-			case ']':
-				rbracket++;
-				break;
-			}
-
-			if (lbracket == rbracket)  // 已经符合树结构，剪枝并收缩边
-			{
-				// 剪枝
-				Edge tempE = context.findEdge(e.endNode, ']');
-				if (tempE.valid())
-				{
-					context.remove(tempE);
-				}
-				tempE = context.findEdge(e.endNode, '[');
-				if (tempE.valid())
-				{
-					context.remove(tempE);
-				}
-
-				// 收缩
-				e.endLabelIndex = i;
-				context.updateEdge(e.startNode, context.s[e.startLabelIndex], i);
-				purgeFlag = true;
-				break;
-			}
-		}
-		if (!purgeFlag)  // 没有进行剪枝
-		{
-			purnTreeMain(context, e.endNode, lbracket, rbracket);
-		}
-	}
-}
-
-
-/*
- * Main function which will carry out all the different phases of the Ukkonen's
- * algorithm. Through suffixTree we'll maintain the current position in the tree
- * and then add the prefix 0 -> lastIndex in the tree created in the previous
- * iteration.
- *
- * 主函数：将会执行所有不同的阶段。在构建 suffixTree 的过程中，我们将会在树中的当前位置
- * 之后增加前缀 0 -> lastIndex 到树中，这个树是在前一次迭代中创建的
- */
-void carryPhase(suffixTree& tree, int lastIndex)
-{
-	// cout << "Phase " << lastIndex << " Adding " << Input.substr(0, lastIndex + 1) << endl;
-	int parentNode; // 父节点
-	// to keep track of the last encountered(遇到的) node.
-	// Used for creating the suffix link.
-	int previousParentNode = -1;
-	while (true)
-	{
-		// First we try to match an edge for this, if there is one edge and all
-		// other subsequent suffixs would already be there.
-		// 首先，我们试图匹配这条边，如果这里存在一条边，所有随后的后缀都会在这里
-		Edge e;
-		parentNode = tree.rootNode;
-
-		if (tree.endReal())  // 如果树在节点终止(endindex 比较小意味着只有当前字符需要加到后缀树上)
-		{
-			// 下面两条语句主要是检查是否有由根节点出发的 单一边，最后一个
-			e = tree.context->findEdge(tree.rootNode, tree.context->s[lastIndex]);
-			if (e.startNode != -1) // 这条边已经存在
-				break;             // 跳出循环  ****** 只有这里可以跳出循环 *********
-		}
-		// If previoustree ends in between an edge, then we need to find that
-		// edge and match after that.
-		// 如果先前的树在两条边之间终止了，我们需要找到那条边，并且
-		else
-		{
-			e = tree.context->findEdge(tree.rootNode, tree.context->s[tree.startIndex]);
-			int diff = tree.endIndex - tree.startIndex;  // 当前索引与前一个插入索引的距离（下面 e.startLabelIndx+diff+1 检验这条边是否仍然满足）
-			if (tree.context->s[e.startLabelIndex + diff + 1] == tree.context->s[lastIndex])
-				// We have a match
-				break;
-			//If match was not found this way, then we need to break this edge
-			// and add a node and insert the string.
-			//      cout << " breaking edge " << endl;
-			parentNode = breakEdge(tree, e);  // 在这里会设置 parent Node
-		}
-
-		// We have not matchng edge at this point, so we need to create a new
-		// one, add it to the tree at parentNode position and then insert it
-		// into the hash table.
-		//
-		// We are creating a new node here, which means we also need to update
-		// the suffix link here. Suffix link from the last visited node to the
-		// newly created node.
-		//  cout << "adding new edge" << endl;
-		// 
-		//
-		// 下面的代码表示在这一点没有匹配的边，所以我们需要创建一条新边。并且将它加入到树中
-		// 双亲节点的位置，之后将其加入到 hash 表中。
-		// 
-		// 我们也会创建一个新的节点，这也意味着我们需要更新 suffix link。suffix link 从 last visited
-		// 的节点指向 newly created node。这里在 parentNode 部分创建新的节点（parentNode大部分是根节点，在边需要分裂时则是新创建的节点）
-		Edge* newEdge = new Edge(parentNode, lastIndex, tree.context->inputLength, tree.context);
-		tree.context->insert(*newEdge);  // 将边插入到 hash 表中
-		if (previousParentNode > 0)  // 不是根节点，构建 suffix link
-			tree.context->nodeArray[previousParentNode].suffixNode = parentNode;
-		previousParentNode = parentNode;  // 更新 previousParentNode
-
-		// Move to next suffix, i.e. next extension.
-		// 移动到下一个后缀
-		if (tree.rootNode == 0)  // rootNode 是根节点
-			tree.startIndex++;
-		else
-		{
-			tree.rootNode = tree.context->nodeArray[tree.rootNode].suffixNode;
-			// printf("using suffix link while adding %d %d\n",tree.rootNode, nodeArray[tree.rootNode].suffixNode);
-		}
-		tree.migrateToClosestParent();  // 移动到最近的 parent
-	}
-
-	if (previousParentNode > 0)
-		tree.context->nodeArray[previousParentNode].suffixNode = parentNode;
-	tree.endIndex++;
-	tree.migrateToClosestParent();
-}
-
 ///**************************************************/
 ///
 /// Code about Plan Tree
@@ -1476,382 +747,6 @@ std::string serialize(PlanTreeNode * root){
 	res += ']';
 	return res;
 }
-
-
-template <class T>
-struct PlanTree
-{
-	using json = nlohmann::json;
-
-	double offset;
-
-	PlanTreeNode *root;
-	std::string str_expression;
-	bool init_flag;
-	suffixTreeContext context;
-	std::vector<std::string*> str_of_node;
-	
-	std::string json_str;
-	int node_num;
-	double cost_log;
-	double s_dist_best, c_dist_best, cost_dist_best;
-
-	suffixTree testTree;
-	std::unordered_map<std::string, int> subTree;
-
-	const char* get_name(T* exp)
-	{
-		if (NULL != exp)
-		{
-
-			const char * name_start = exp->Pop()->SzId();
-			const char * base_str = "CPhysical";
-
-			if(strlen(name_start) > 9)
-			{
-				for(int i=0;i<9;++i)
-				{
-					if (name_start[i] != base_str[i])
-					{
-						return name_start;
-					}
-				}
-				return name_start+9;
-			}
-			else
-			{
-				return name_start;
-			}
-		}
-		else
-			return "";
-	}
-
-	double get_cost(T* exp)
-	{
-		if(NULL != exp && exp->Pop()->FPhysical())
-		{
-			return exp->Cost().Get();
-		}
-		else
-			return 0.0;
-	}
-
-	
-	double get_cost(){
-		return root->data.cost;
-	}
-
-	void insert_child(T* child_expression, PlanTreeNode& parent)
-	{
-		if (NULL != child_expression)
-		{
-			PlanTreeNode* cur = NULL;
-
-			
-#ifdef ARENA_PHYSICAL
-			if (child_expression->Pop()->FPhysical())  
-			{
-#endif
-				const char * expression_name = get_name(child_expression);
-				cur = new PlanTreeNode(NodeData(get_cost(child_expression), expression_name));
-				parent.push_back(cur);
-				int name_len = strlen(expression_name);
-
-				if (name_len > 4 && !strcmp(expression_name + name_len - 4, "Scan"))
-				{
-					cur->data.tag = "SCAN";
-					gpos::ARENAIOstream table_name;
-					child_expression->Pop()->OsPrint(table_name);
-					std::string temp = table_name.ss.str();
-					std::size_t start = temp.find("Table Name: (");
-					if(start)
-					{
-						std::size_t end = temp.find(")", start);
-						start += 13;
-						start = temp.find("\"", start) + 1;
-						end = temp.find("\"", start);
-						PlanTreeNode * table = new PlanTreeNode(NodeData(0.0, temp.substr(start, end-start), "TABLE"));
-						cur->push_back(table);
-					}
-				} else if(name_len > 4 && !strcmp(expression_name + name_len -4, "Join"))
-				{
-					cur->data.tag = "JOIN";
-				}
-
-				for (std::size_t i = 0; i < child_expression->Arity(); ++i)
-				{
-					insert_child((*child_expression)[i], *cur);
-				}
-
-				const char * motionOp = "Motion";
-				if (cur->data.name.size() > 6 && cur->data.name.compare(0, 6, motionOp) == 0 && cur->size() == 1 && 
-					cur->data.cost - (*cur)[0]->data.cost < 0.1 * cur->data.cost )
-				{
-					parent.child[parent.size()-1] = (*cur)[0];
-					cur->child[0] = nullptr;
-					delete cur;
-				}
-#ifdef ARENA_PHYSICAL
-			}
-#endif
-		}
-	}
-
-	PlanTree()
-	{
-		offset = 0.0;
-		root = NULL;
-		init_flag = false;
-	}
-
-	~PlanTree()
-	{
-		if (NULL != root)
-			delete root;
-	}
-
-	void repreOfStr()
-	{
-		str_expression = root->get_string();
-	}
-
-	void generateSuffixTree()
-	{
-		repreOfStr();
-		context.init(str_expression);
-		suffixTree tree(0, 0, -1, &context);
-		for (int i = 0; i <= context.inputLength; ++i)
-			carryPhase(tree, i);
-		context.finishing_work();
-	}
-
-	void getNodeStr()
-	{
-		std::queue<PlanTreeNode*> node_queue;
-		PlanTreeNode* current_node = NULL;
-		node_queue.push(root);
-		while (!node_queue.empty())
-		{
-			current_node = node_queue.front();
-
-			str_of_node.push_back(&(current_node->data.name));
-			for (std::size_t i = 0; i < current_node->child.size(); ++i)
-			{
-				node_queue.push(current_node->child[i]);
-			}
-			node_queue.pop();
-		}
-	}
-
-	void TED_json()
-	{
-		json_str = "{\"root\":";
-		node_num = 0;
-		root->ted_json(json_str, &node_num);
-		json_str += "}";
-	}
-
-	void init(T* plan)
-	{
-		if (NULL != plan)
-		{
-			root = new PlanTreeNode(NodeData(get_cost(plan), get_name(plan)));
-			if (root->data.name.size() > 4)
-			{
-				std::size_t compareStart = root->data.name.size() - 4;
-				if(root->data.name.compare(compareStart, 4, "Scan") == 0)
-				{
-					root->data.tag = "SCAN";
-				} else if (root->data.name.compare(compareStart, 4, "Join") == 0)
-				{
-					root->data.tag = "JOIN";
-				}
-			}
-
-			for (std::size_t i = 0; i < plan->Arity(); ++i)
-			{
-				insert_child((*plan)[i], *root);
-			}
-
-			if (root->data.name.size() > 6 && root->data.name.compare(0, 6, "Motion") == 0 && root->size() == 1 && 
-				root->data.cost - (*root)[0]->data.cost < 0.1 * root->data.cost )
-			{
-				auto temp = (*root)[0];
-				root->child[0] = nullptr;
-				delete root;
-				root = temp;
-			}
-		}
-		init_flag = true;
-		generateSuffixTree();
-		getNodeStr();
-	}
-
-	void init(T* plan, int flag)
-	{
-		if (flag == 0 && NULL != plan)
-		{
-			root = new PlanTreeNode(NodeData(get_cost(plan), get_name(plan)));
-			if (root->data.name.size() > 4)
-			{
-				std::size_t compareStart = root->data.name.size() - 4;
-				if(root->data.name.compare(compareStart, 4, "Scan") == 0)
-				{
-					root->data.tag = "SCAN";
-				} else if (root->data.name.compare(compareStart, 4, "Join") == 0)
-				{
-					root->data.tag = "JOIN";
-				}
-			}
-
-			for (std::size_t i = 0; i < plan->Arity(); ++i)
-			{
-				insert_child((*plan)[i], *root);
-			}
-
-			if (root->data.name.size() > 6 && root->data.name.compare(0, 6, "Motion") == 0 && root->size() == 1 && 
-				root->data.cost - (*root)[0]->data.cost < 0.1 * root->data.cost )
-			{
-				auto temp = (*root)[0];
-				root->child[0] = nullptr;
-				delete root;
-				root = temp;
-			}
-		}
-
-		init_flag = true;
-		if (flag == 1)
-		{
-			repreOfStr();
-		}
-		else if (flag == 2)
-			getNodeStr();
-		else if (flag == 3)
-			context.init(str_expression);
-		else if (flag == 4)
-		{
-			testTree.init(0, 0, -1, &context);
-			for (int i = 0; i <= context.inputLength; ++i)
-				carryPhase(testTree, i);
-		}
-		else if (flag == 5)
-			context.finishing_work1();
-		else if (flag == 6)
-		 	context.finishing_work2();
-		else if (flag == 7) {
-			purnTree(testTree);
-			getSubTree(context, 0, std::string{});
-		}
-	}
-
-private:
-	void getSubTree(suffixTreeContext& context_var, int node, std::string s){
-		Edge lchild = context_var.findEdge(node, '[');
-		Edge rchild = context_var.findEdge(node, ']');
-
-		if (!lchild.valid() && !rchild.valid()) {
-			if (s.back() == '$') {
-				s.pop_back();
-			}
-
-			subTree[s] = context_var.nodeArray[node].lvs;
-			return;
-		}
-
-		if (lchild.valid()) {
-			std::string temp = s;
-			for (auto i=lchild.startLabelIndex; i<=lchild.endLabelIndex; i++) {
-				temp += context_var.s[i];
-			}
-			getSubTree(context_var, lchild.endNode, temp);
-		}
-
-		if (rchild.valid()) {
-			std::string temp = s;
-			for (auto i=rchild.startLabelIndex; i<=rchild.endLabelIndex; i++) {
-				temp += context_var.s[i];
-			}
-			getSubTree(context_var, rchild.endNode, temp);
-		}
-
-		return;
-	}
-
-public:
-	//****************** functions about distance ********************************/
-	double distance(PlanTree& other)
-	{
-		double s_dist = structure_dist(other);
-		double c_dist = editDist(str_of_node, other.str_of_node);
-		double cost = cost_dist(other);
-		return (1-gLambda)*(offset + other.offset) / 2 +gLambda * (s_dist * gSWeight + c_dist * gCWeight + cost * gCostWeight);
-	}
-
-	double distance_with_best(PlanTree &other)
-	{
-		double s_dist = structure_dist(other);
-		double c_dist = editDist(str_of_node, other.str_of_node);
-		double cost = cost_dist(other);
-
-		s_dist_best = s_dist;
-		c_dist_best = c_dist;
-		cost_dist_best = cost;
-		offset = cost - (s_dist+c_dist);
-
-		return (1-gLambda)*offset / 2 +gLambda * (s_dist * gSWeight + c_dist * gCWeight + cost * gCostWeight);
-	}
-
-	double structure_dist(PlanTree& other)
-	{
-		int res = 0;
-		
-		std::unordered_map<std::string, int> * small, *large;
-		if (subTree.size() < other.subTree.size()){
-			small = &subTree;
-			large = &(other.subTree);
-		} else {
-			small = &(other.subTree);
-			large = &subTree;
-		}
-
-		for (auto iter=small->begin(); iter != small->end() ; iter++){
-			const std::string & key = iter->first;
-			auto iter2 = large->find(key);
-			if (iter2 != large->end()) {
-				res += iter->second * iter2->second;
-			}
-		}
-
-		double temp  = sqrt(context.self_kernel * other.context.self_kernel);
-		temp = (double)(res) / temp;
-		return sqrt(1.0 - temp);
-	}
-
-	double content_dist(PlanTree& other)
-	{
-		return editDist(str_of_node, other.str_of_node);
-	}
-
-	double cost_dist(PlanTree& other)
-	{
-		double res = abs(root->data.cost - other.root->data.cost) / max_cost;
-		return res;
-	}
-
-	void write(std::ostream &out)
-	{
-		if (NULL != root)
-			root->output(out);
-	}
-
-	void write_json(std::ostream &out)
-	{
-		if (NULL != root)
-			root->output_json(out);
-	}
-};
-
 
 template <class T>
 struct PlanTreeHash  // use hash table to calculate the structure difference
@@ -3064,7 +1959,6 @@ struct PlanTreeExp  // use the suffix tree to calculate subtree kernel
 ///**************************************************/
 std::queue<CExpression *> plan_buffer;
 std::vector<CExpression *> plan_buffer_for_exp; 
-std::vector<PlanTree<CExpression>> plan_trees;
 std::vector<PlanTreeHash<CExpression>> plan_trees_hash;
 std::vector<PlanTreeHash<CExpression>> plan_trees_send;
 
@@ -5658,9 +4552,6 @@ CEngine::SamplePlans()
 		fout_plan << tempTree.root->generate_json();
 		fout_plan << "\n";
 	}
-	// plan_trees.push_back(PlanTree<CExpression>());
-	// plan_trees.back().init(pexpr);
-	// pexpr->Release();
 	//************************ARENA END**************************/
 
 	// generate randomized seed using local time
@@ -5793,6 +4684,10 @@ CEngine::SamplePlans()
 		// ARENATimeExp3();
 		// ARENATimeExp3Random();
 		// ARENATimeExp3Cost();
+
+		/* Exp2 */
+		ARENATimeExp4();
+		// ARENATimeExp4Hash();
 
 		/* Exp4 */
 		// ARENAGTExp();
@@ -6609,9 +5504,8 @@ void DealWithPlan() {
 	}
 
 
-	// 重置全局变量
+	// 重置全局变量, plan_trees_hash
 	delete web_client;
-	std::vector<PlanTree<CExpression>> ().swap(plan_trees);
 	find_index.clear();
 	new_add = 0;
 	max_cost = 0.0;
@@ -6780,7 +5674,6 @@ void FindKRandom() {
 
 	// 重置全局变量
 	delete web_client;
-	std::vector<PlanTree<CExpression>> ().swap(plan_trees);
 	find_index.clear();
 	new_add = 0;
 	max_cost = 0.0;
@@ -6913,7 +5806,6 @@ void FindKCost() {
 
 	// 重置全局变量
 	delete web_client;
-	std::vector<PlanTree<CExpression>> ().swap(plan_trees);
 	find_index.clear();
 	new_add = 0;
 	max_cost = 0.0;
@@ -6924,7 +5816,7 @@ void FindKCost() {
 // get a file name to output the execution information
 std::string getLogFileName()
 {
-	std::string res("/home/")
+	std::string res("/home/");
 
 	char * userName = nullptr;
 	userName = getlogin();  // get the user name
@@ -6973,7 +5865,7 @@ void ARENATimeExp3()
 
 			// if we use the B-TIPS-Basic method, we use a hash table to record the distance
             std::unordered_map<int, double> dist_record;
-			for(std::size_t i=1;i<plan_trees.size();++i)  // this 'for' statement is used to compute relevance
+			for(std::size_t i=1;i<plan_trees_hash.size();++i)  // this 'for' statement is used to compute relevance
 			{
 				double temp_dist = plan_trees_hash[i].distance_with_best(plan_trees_hash[0]);
 				dist_record[i] = temp_dist;
@@ -7064,53 +5956,56 @@ void ARENATimeExp3Cost()
 	}
 }
 
-// 测试不同方法使用优化过的后缀树花费的时间
+// test the time-consuming of suffix tree in different stages
 void ARENATimeExp4()
 {
-	std::vector<PlanTreeExp<CExpression>> plan_trees_exp;  // 添加元素，辅助线程将其转换为 PlanTree
+	std::vector<PlanTreeExp<CExpression>> plan_trees_exp;
 	plan_trees_exp.reserve(plan_buffer.size());
-	std::ofstream fout_time("/home/wang/timeRecord.txt");
+
+	std::string logFile = getLogFileName();
+	std::ofstream fout_time(logFile);
 	if (fout_time.is_open())
 	{
 		for (std::size_t tempPlanNum = 1000; tempPlanNum < 11000; tempPlanNum += 1000)
 		{
-			fout_time << "\n*当前测试的 plan 数量为: " << tempPlanNum << '\n';
+			fout_time << "\n*the number of informative plans: " << tempPlanNum << '\n';
 			auto start = std::chrono::steady_clock::now();
-			// 初始化的第零阶段，生成 plan_tree 结构
+			// construct the plan tree
 			for (std::size_t i = 0; i < tempPlanNum; i++)
 			{
 				plan_trees_exp.push_back(PlanTreeExp<CExpression>());
 				plan_trees_exp[i].init(plan_buffer_for_exp[i], 0);
 
-				// 设置 cost 的最大值
+				// find the max cost
 				if (plan_trees_exp[i].root->data.cost > max_cost)
 				{
 					max_cost = plan_trees_exp[i].root->data.cost;
 				}
 			}
-			fout_time << "第一阶段(初始化PlanTreeNode结构体)初始计划的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
+			fout_time << "the time to initialize the plan tree(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
 			start = std::chrono::steady_clock::now();
 
-			// 初始化第一阶段，构造后缀树
-			for(std::size_t i=0;i<plan_trees_exp.size();i++)  // init1
+			// construct the sufffix tree
+			for(std::size_t i=0;i<plan_trees_exp.size();i++)
 			{
 				plan_trees_exp[i].init(NULL, 1);
 			}
 
-			// 下一阶段，计算叶子节点的个数
-			for(std::size_t i=0;i<plan_trees_exp.size();i++)  // 计算叶子节点的个数
+			// calculate the number of leaves, which is also the initialization phase of the suffix tree
+			for(std::size_t i=0;i<plan_trees_exp.size();i++)
 			{
 				plan_trees_exp[i].m_stn->calculateNum();
 			}
-			fout_time << "*构造后缀树（并计算叶子节点的个数）的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
+			fout_time << "*the time to initialize suffix tree(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
 			start = std::chrono::steady_clock::now();
 			
 			
-			for(std::size_t i=0;i<plan_trees_exp.size();i++)  // 计算自己与自己的树核
+			// calculate the subtree kernel
+			for(std::size_t i=0;i<plan_trees_exp.size();i++)
 			{
 				plan_trees_exp[i].m_stn->distance(*(plan_trees_exp[i].m_stn));
 			}
-			fout_time << "*计算自己的树核的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
+			fout_time << "*calculate the subtree kernel(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
 			start = std::chrono::steady_clock::now();
 
 			plan_trees_exp.clear();
@@ -7119,51 +6014,52 @@ void ARENATimeExp4()
 	}
 }
 
-// 测试不同方法使用优化过的后缀树花费的时间
+// test the time-consuming of hash table in different stages
 void ARENATimeExp4Hash()
 {
 	plan_trees_hash.reserve(plan_buffer.size());
-	std::ofstream fout_time("/home/wang/timeRecord.txt");
+
+	std::string logFile = getLogFileName();
+	std::ofstream fout_time(logFile);
 	if (fout_time.is_open())
 	{
 		for (std::size_t tempPlanNum = 1000; tempPlanNum < 11000; tempPlanNum += 1000)
 		{
-			fout_time << "\n*当前要选出的候选计划的数量为: " << tempPlanNum << '\n';
+			fout_time << "\n*the number of informative plans: " << tempPlanNum << '\n';
 			auto start = std::chrono::steady_clock::now();
-			// 初始化的第零阶段，生成 plan_tree 结构
+			// construct the plan tree
 			for (std::size_t i = 0; i < tempPlanNum; i++)
 			{
 				plan_trees_hash.push_back(PlanTreeHash<CExpression>());
 				plan_trees_hash[i].init(plan_buffer_for_exp[i], 0);
 
-				// 设置 cost 的最大值
 				if (plan_trees_hash[i].root->data.cost > max_cost)
 				{
 					max_cost = plan_trees_hash[i].root->data.cost;
 				}
 			}
-			fout_time << "第一阶段(初始化PlanTreeNode结构体)初始计划的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
+			fout_time << "the time to initialize the plan tree(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
 			start = std::chrono::steady_clock::now();
 
-			// 初始化第一阶段，生成一棵树的所有统计信息
-			for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init1
+			// construct the hash table
+			for(std::size_t i=0;i<plan_trees_hash.size();i++)
 			{
 				plan_trees_hash[i].init(NULL, 1);
 			}
-			fout_time << "*生成子树统计信息的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
+			fout_time << "*the time to initialize the hash table(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
 			start = std::chrono::steady_clock::now();
 
-			// 初始化第三阶段，计算自己与自己的树核
-			for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init3
+			// calculate the subtree kernel
+			for(std::size_t i=0;i<plan_trees_hash.size();i++)
 			{
 				plan_trees_hash[i].init(NULL, 3);
 			}
-			fout_time << "*计算与自己的距离的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
+			fout_time << "*calculate the subtree kernel(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
 			start = std::chrono::steady_clock::now();
 
 			max_cost -= plan_trees_hash[0].root->data.cost;
 
-			// 重置全局变量
+			// reset the global variables
 			plan_trees_hash.clear();
 			new_add = 0;
 			max_cost = 0.0;
@@ -7172,69 +6068,6 @@ void ARENATimeExp4Hash()
 		fout_time.close();
 	}
 }
-
-// 原始的后缀树
-void ARENATimeExp4Old() {
-	plan_trees.reserve(plan_buffer.size());
-	std::size_t i=0;
-	std::ofstream fout_time("/home/wang/timeRecord.txt");
-	if (fout_time.is_open())
-	{
-		fout_time << "计划数量为: " << plan_buffer.size() << std::endl;
-		auto start = std::chrono::steady_clock::now();
-		// 初始化的第一阶段，生成 plan_tree 结构
-		// 记录已经出现过的树，如果相同的树重复出现可以直接删除，既可以直接避免结果中出现相同的结果，也可以加快程序执行速度。
-		// 之所以会出现相同的树，是因为 plan_tree 中只保留了 Physical 节点，使得原本不同的执行计划可能变为相同的计划。
-		// 经验证发现，即使保留其它节点，仍然会有重复的 plan 出现，为什么？
-		{
-			std::unordered_map<std::string, std::unordered_set<int>> temp_plan_tree;
-			while(!plan_buffer.empty())
-			{
-				plan_trees.push_back(PlanTree<CExpression>());
-				plan_trees[i].init(plan_buffer.front(), 0);
-				plan_buffer.front()->Release();
-				plan_buffer.pop();
-
-				// 设置 cost 的最大值
-				if (plan_trees[i].root->data.cost > max_cost)
-				{
-					max_cost = plan_trees[i].root->data.cost;
-				}
-
-				++i;
-			}
-		}
-		fout_time << "第一阶段(初始化PlanTreeNode结构体)初始计划的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-		fout_time << "此时剩余的 plan 个数为: " << plan_trees.size() << '\n';
-		start = std::chrono::steady_clock::now();
-
-		// 初始化第二阶段，对一棵树进行序列化，用于之后计算后缀树
-		for(std::size_t i=0;i<plan_trees.size();i++)  // init1
-		{
-			plan_trees[i].init(NULL, 1);
-		}
-		fout_time << "    生成字符串的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-		start = std::chrono::steady_clock::now();
-
-		// 初始化第四阶段，初始化后缀树的上下文
-		for(std::size_t i=0;i<plan_trees.size();i++)  // init3
-		{
-			plan_trees[i].init(NULL, 3);
-		}
-		fout_time << "    初始化上下文的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-		start = std::chrono::steady_clock::now();
-
-		// 初始化第五阶段，构造后缀树
-		for(std::size_t i=0;i<plan_trees.size();i++)  // init4
-		{
-			plan_trees[i].init(NULL, 4);
-		}
-		fout_time << "    构造后缀树的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-		start = std::chrono::steady_clock::now();
-		fout_time.close();
-	}
-}
-
 
 // 该函数就是正常的 B-AQPS 算法，但是不会发送数据
 // 参数的修改是在 SamplePlans 函数中发生的
@@ -7292,7 +6125,7 @@ void ARENAGTExp()
 
 		// 当使用旧方法时，则用 hash 表存储 distance
 		// std::unordered_map<int, double> dist_record;
-		// for(std::size_t i=1;i<plan_trees.size();++i)
+		// for(std::size_t i=1;i<plan_trees_hash.size();++i)
 		// {
 		// 	double temp_dist = plan_trees_hash[i].distance_with_best(plan_trees_hash[0]);
 		// 	dist_record[i] = temp_dist;
