@@ -1,0 +1,50 @@
+
+*the number of informative plans: 1000
+the time to initialize the plan tree(ms): 31
+*the time to initialize suffix tree(ms): 151
+*calculate the subtree kernel(ms): 22
+
+*the number of informative plans: 2000
+the time to initialize the plan tree(ms): 61
+*the time to initialize suffix tree(ms): 362
+*calculate the subtree kernel(ms): 44
+
+*the number of informative plans: 3000
+the time to initialize the plan tree(ms): 90
+*the time to initialize suffix tree(ms): 634
+*calculate the subtree kernel(ms): 67
+
+*the number of informative plans: 4000
+the time to initialize the plan tree(ms): 119
+*the time to initialize suffix tree(ms): 885
+*calculate the subtree kernel(ms): 89
+
+*the number of informative plans: 5000
+the time to initialize the plan tree(ms): 150
+*the time to initialize suffix tree(ms): 1130
+*calculate the subtree kernel(ms): 110
+
+*the number of informative plans: 6000
+the time to initialize the plan tree(ms): 182
+*the time to initialize suffix tree(ms): 1399
+*calculate the subtree kernel(ms): 132
+
+*the number of informative plans: 7000
+the time to initialize the plan tree(ms): 212
+*the time to initialize suffix tree(ms): 1681
+*calculate the subtree kernel(ms): 154
+
+*the number of informative plans: 8000
+the time to initialize the plan tree(ms): 245
+*the time to initialize suffix tree(ms): 1941
+*calculate the subtree kernel(ms): 176
+
+*the number of informative plans: 9000
+the time to initialize the plan tree(ms): 275
+*the time to initialize suffix tree(ms): 2186
+*calculate the subtree kernel(ms): 198
+
+*the number of informative plans: 10000
+the time to initialize the plan tree(ms): 305
+*the time to initialize suffix tree(ms): 2449
+*calculate the subtree kernel(ms): 219

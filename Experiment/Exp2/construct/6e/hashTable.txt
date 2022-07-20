@@ -1,0 +1,50 @@
+
+*the number of informative plans: 1000
+the time to initialize plan tree(ms): 25
+*the time to initialize hash table(ms): 16
+*calculate the subtree kernel(ms): 2
+
+*the number of informative plans: 2000
+the time to initialize plan tree(ms): 48
+*the time to initialize hash table(ms): 33
+*calculate the subtree kernel(ms): 5
+
+*the number of informative plans: 3000
+the time to initialize plan tree(ms): 72
+*the time to initialize hash table(ms): 50
+*calculate the subtree kernel(ms): 8
+
+*the number of informative plans: 4000
+the time to initialize plan tree(ms): 97
+*the time to initialize hash table(ms): 67
+*calculate the subtree kernel(ms): 11
+
+*the number of informative plans: 5000
+the time to initialize plan tree(ms): 140
+*the time to initialize hash table(ms): 93
+*calculate the subtree kernel(ms): 15
+
+*the number of informative plans: 6000
+the time to initialize plan tree(ms): 153
+*the time to initialize hash table(ms): 102
+*calculate the subtree kernel(ms): 17
+
+*the number of informative plans: 7000
+the time to initialize plan tree(ms): 201
+*the time to initialize hash table(ms): 132
+*calculate the subtree kernel(ms): 22
+
+*the number of informative plans: 8000
+the time to initialize plan tree(ms): 245
+*the time to initialize hash table(ms): 152
+*calculate the subtree kernel(ms): 26
+
+*the number of informative plans: 9000
+the time to initialize plan tree(ms): 280
+*the time to initialize hash table(ms): 173
+*calculate the subtree kernel(ms): 30
+
+*the number of informative plans: 10000
+the time to initialize plan tree(ms): 314
+*the time to initialize hash table(ms): 194
+*calculate the subtree kernel(ms): 34
