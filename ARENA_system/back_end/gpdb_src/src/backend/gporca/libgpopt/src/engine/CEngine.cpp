@@ -458,7 +458,7 @@ struct TreeEdit
 
 
 // These three functions are used in the ARENA system
-void DealWithPlan();  // TIPS algorithm
+void ARENA_TIPS();  // TIPS algorithm
 void FindKRandom();  // Random
 void FindKCost();  // Cost
 
@@ -2001,7 +2001,9 @@ void addResult(int id)
 }
 
 
-// B-TIPS algorithm
+/************************************************************
+ * B-TIPS algorithm
+ ************************************************************/ 
 template<class T>
 void FindK(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<MinDist> &dist_record)
 {
@@ -2021,7 +2023,8 @@ void FindK(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<Min
         }
     }
     // find k informative plans
-    else {
+    else
+	{
 		std::vector<MinDist> tempRemoved;
 		tempRemoved.reserve(plans.size() / 3);
 
@@ -2176,34 +2179,44 @@ void IAQPOutputRes(int id)
 }
 
 
-// I-TIPS algorithm
+/************************************************************
+ * I-TIPS algorithm
+ * 
+ * Currently, we also use the Heap to optimize the algorithm.
+ * Each time a plan is selected and sent to the web server then
+ * the process sleeps. The web server wakes up the process
+ * through the signal USR1 and it will make the next selection.
+ ************************************************************/ 
 template<class T>
 void FindK_I(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<MinDist> &dist_record)
 {
-	changeHandler();
+	changeHandler();  // Change the signal handler, 
 
 	res.push_back(0);  // the first element is the QEP
-	IAQPOutputRes(0);
+	IAQPOutputRes(0);  // send the result
+
+	// process sleep waiting to wake up
 	unsigned int t;
 	t = sleep(300);
-	if (t == 0)
+	if (t == 0)  // wait 5 minutes, if no signal is received, exit actively
 	{
-		ARENATellFrontStop(getpid());
+		ARENATellFrontStop(getpid());  // tell web server that the process has ended
 		return;
 	}
 
 	std::vector<MinDist> tempRemoved;
-	tempRemoved.reserve(plans.size() / 3);
+	tempRemoved.reserve(plans.size() / 3);  // allocate the memory in advance
 
 	for (std::size_t i = 0; i < plans.size(); ++i)
 	{
-		MinDist maxValue;
+		MinDist maxValue;  // record optimal plan information
 		maxValue.dist = -100;
+		// select the valid maximum value in heap
 		while(!dist_record.empty() && dist_record.top() > maxValue) {
-			if (dist_record.top().distNum == i) {
+			if (dist_record.top().distNum == i) {  // the top plan information is valid
 				tempRemoved.push_back(maxValue);
 				maxValue = dist_record.top();
-			} else {
+			} else {  // information is out of date and needs to be updated
 				MinDist topElement = dist_record.top();
 				for(std::size_t j=topElement.distNum+1; j<=i ; j++) {
 					double dist = plans[topElement.index].distance(plans[res[j]]);
@@ -2224,11 +2237,13 @@ void FindK_I(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<M
 			dist_record.pop();
 		}
 
+		// update heap information
 		res.push_back(maxValue.index);
 		for(auto & md : tempRemoved)
 			dist_record.push(md);
 		tempRemoved.clear();
 
+		// send result
 		IAQPOutputRes(maxValue.index);
 		t = sleep(300);
 		if (t != 0)
@@ -2241,6 +2256,8 @@ void FindK_I(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<M
 			return;
 		}
 	}
+
+	// if there are no more plans to send, tell the web server this information
 	while(true)
 	{
 		IAQPOutputRes(-1);
@@ -4672,12 +4689,11 @@ CEngine::SamplePlans()
 	if (gResFile.size() > 0 && gResFile.compare("###") != 0)
 	{
 		fout_time << "normal ARENA system\n";
-		DealWithPlan();
+		ARENA_TIPS();
 	}
 	else
 	{
 		fout_time << "experiment\n";
-		// DealWithPlan();
 		// Adjust the experiments that need to be done
 
 		/* Exp1 */
@@ -4689,10 +4705,14 @@ CEngine::SamplePlans()
 		ARENATimeExp4();
 		// ARENATimeExp4Hash();
 
+		/* Exp3 */
+		ARENA_TIPS();
+
 		/* Exp4 */
 		// ARENAGTExp();
 
-		ARENAAosExp();
+		/* Exp5 */
+		// ARENAAosExp();
 	}
 
 	time_end = std::chrono::steady_clock::now();
@@ -5373,447 +5393,9 @@ void ARENAGTFilter(std::unordered_map<std::string, std::vector<int>> & groupTree
 }
 
 
-void DealWithPlan() {
-	if(gMode == 'B')
-	{
-		web_client = new Sender;
-		web_client->sha256 = gResFile;
-		plan_trees_send.resize(gARENAK+1);
-	}
-	else if(gMode == 'I')  // 对于 I 模式，最多返回 plan_buffer_for_exp.size 个 plan ，而每个 plan 都需要 plan_trees_send
-	{
-		plan_trees_send.resize(plan_buffer_for_exp.size());
-	}
-
-	if (gARENAK == 0)  // 只选择 QEP
-	{
-		plan_trees_hash.push_back(PlanTreeHash<CExpression>());
-		plan_trees_hash[0].init(plan_buffer.front());
-		addResult(0);
-		std::queue<gpopt::CExpression*> ().swap(plan_buffer);  // 目的在于清空 plan_buffer
-	}
-	else
-	{
-		plan_trees_hash.reserve(plan_buffer.size());
-		std::size_t i=0;
-#ifdef ARENA_DEBUG
-		std::ofstream fout_time("/tmp/timeRecord.txt");
-        if (fout_time.is_open())
-        {
-			fout_time << "计划数量为: " << plan_buffer.size() << std::endl;
-            auto start = std::chrono::steady_clock::now();
-			auto startAll = start;
-#endif
-            // 初始化的第一阶段，生成 plan_tree 结构
-			// 记录已经出现过的树，如果相同的树重复出现可以直接删除，既可以直接避免结果中出现相同的结果，也可以加快程序执行速度。
-			// 之所以会出现相同的树，是因为 plan_tree 中只保留了 Physical 节点，使得原本不同的执行计划可能变为相同的计划。
-			// 经验证发现，即使保留其它节点，仍然会有重复的 plan 出现，为什么？
-			{
-				std::unordered_map<std::string, std::unordered_set<int>> temp_plan_tree;
-				// while(!plan_buffer.empty())
-				for(auto expressionIter: plan_buffer_for_exp)
-				{
-					plan_trees_hash.push_back(PlanTreeHash<CExpression>());
-					plan_trees_hash[i].init_detailed(expressionIter);
-					plan_trees_hash[i].init(nullptr, 1);
-
-					// 设置 cost 的最大值
-					if (plan_trees_hash[i].get_cost() > max_cost)
-					{
-						max_cost = plan_trees_hash[i].get_cost();
-					}
-
-					// 对树进行序列化，判断是否已经存在相同的树
-					std::string & tempTreeStr = plan_trees_hash[i].str_serialize;
-					fout_time << "第 " << i << " 个 plan 的树结构为: "  << tempTreeStr << '\n';
-					auto tempIter = temp_plan_tree.find(tempTreeStr);
-					if(tempIter != temp_plan_tree.end()){  // 存在相同的字符串
-						int tempCost = (int)(plan_trees_hash[i].get_cost());
-						if (tempIter->second.find(tempCost) != tempIter->second.end()){  // 相同的字符串的 cost 也相同
-							// 删除当前元素
-							// fout_time << "第 " << i << " 个元素重复，其序列化的值为：" << tempTreeStr << '\n';
-							plan_trees_hash.pop_back();
-							i--;
-						} else{
-							tempIter->second.insert(tempCost);
-						}
-					} else {  // 还没有相同的字符串
-						temp_plan_tree[tempTreeStr] = std::unordered_set<int>{(int)(plan_trees_hash[i].get_cost())};
-					}
-					
-					++i;
-				}
-			}
-            fout_time << "第一阶段(初始化PlanTreeNode结构体)初始计划的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			fout_time << "此时剩余的 plan 个数为: " << plan_trees_hash.size() << '\n';
-            start = std::chrono::steady_clock::now();
-
-			// 初始化的剩余阶段
-			for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init1
-			{
-				plan_trees_hash[i].init(NULL, 2);  // 转变为字符串，用于计算内容差异
-				plan_trees_hash[i].init(NULL, 3);  // 计算自己与自己的树核
-			}
-            fout_time << "初始化剩余阶段的时间为: " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-            start = std::chrono::steady_clock::now();
-
-            max_cost -= plan_trees_hash[0].root->data.cost;
-
-			// 初始化的最终阶段，计算每个 plan 与 best_plan 的结构差异、内容差异和cost差异
-            std::priority_queue<MinDist> dist_record;
-            // 这个代码块用来计算 relevance
-            {
-                double temp_dist;
-				for (std::size_t i = 1; i < plan_trees_hash.size(); ++i)
-				{
-					temp_dist = plan_trees_hash[i].distance_with_best(plan_trees_hash[0]);
-					MinDist temp;
-					temp.index = i;
-					temp.dist = temp_dist;
-					dist_record.push(temp);
-				}
-            }
-
-			// 统计寻找最终结果所用时间
-            fout_time << "计算每个计划与最优计划距离的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-            start = std::chrono::steady_clock::now();
-
-			std::vector<int> res;
-			if (gMode == 'B'){  // B-APQ 模式
-				FindK(plan_trees_hash, res, dist_record);
-				fout_time << "寻找k个目标值的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-				fout_time << "最终找到结果的编号为：" << '\n';
-				for(auto i: res){
-					fout_time << i << '\t';
-				}
-				fout_time << '\n';
-			} else if (gMode == 'I'){  // I-APQ 模式
-				fout_time << "调用 I-AQPS 查询\n";
-				fout_time << "结果的输出文件是: " << gResFile << '\n';
-				FindK_I(plan_trees_hash, res, dist_record);
-			}
-
-            ARENA_result(res);  // 将结果保留到文件中
-            fout_time << "程序整体的执行时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startAll)).count() << std::endl;
-            fout_time.close();
-        }
-	}
-	if(gMode == 'B')
-	{
-		web_client->Close();
-	}
-
-
-	// 重置全局变量, plan_trees_hash
-	delete web_client;
-	find_index.clear();
-	new_add = 0;
-	max_cost = 0.0;
-	counter = 0;
-	gARENAK = 5;
-}
-
-void FindKRandom() {
-	web_client = new Sender;
-	web_client->sha256 = gResFile;
-	plan_trees_send.resize(gARENAK+1);
-
-	if (gARENAK == 0)  // 只选择 QEP
-	{
-		plan_trees_hash.push_back(PlanTreeHash<CExpression>());
-		plan_trees_hash[0].init(plan_buffer.front());
-		addResult(0);
-		std::queue<gpopt::CExpression*> ().swap(plan_buffer);  // 目的在于清空 plan_buffer
-	}
-	else
-	{
-		plan_trees_hash.reserve(plan_buffer.size());
-		std::size_t i=0;
-#ifdef ARENA_DEBUG
-		std::ofstream fout_time("/home/wang/timeRecord.txt");
-        if (fout_time.is_open())
-        {
-			fout_time << "计划数量为: " << plan_buffer.size() << std::endl;
-            auto start = std::chrono::steady_clock::now();
-#endif
-            // 初始化的第一阶段，生成 plan_tree 结构
-			// 记录已经出现过的树，如果相同的树重复出现可以直接删除，既可以直接避免结果中出现相同的结果，也可以加快程序执行速度。
-			// 之所以会出现相同的树，是因为 plan_tree 中只保留了 Physical 节点，使得原本不同的执行计划可能变为相同的计划。
-			// 经验证发现，即使保留其它节点，仍然会有重复的 plan 出现，为什么？
-			{
-				std::unordered_map<std::string, std::unordered_set<int>> temp_plan_tree;
-				// while(!plan_buffer.empty())
-				for(auto expressionIter: plan_buffer_for_exp)
-				{
-					plan_trees_hash.push_back(PlanTreeHash<CExpression>());
-					plan_trees_hash[i].init_detailed(expressionIter);
-					plan_trees_hash[i].init(nullptr, 1);
-
-					// 设置 cost 的最大值
-					if (plan_trees_hash[i].get_cost() > max_cost)
-					{
-						max_cost = plan_trees_hash[i].get_cost();
-					}
-
-					// 对树进行序列化，判断是否已经存在相同的树
-					std::string & tempTreeStr = plan_trees_hash[i].str_serialize;
-					fout_time << "第 " << i << " 个 plan 的树结构为: "  << tempTreeStr << '\n';
-					auto tempIter = temp_plan_tree.find(tempTreeStr);
-					if(tempIter != temp_plan_tree.end()){  // 存在相同的字符串
-						int tempCost = (int)(plan_trees_hash[i].get_cost());
-						if (tempIter->second.find(tempCost) != tempIter->second.end()){  // 相同的字符串的 cost 也相同
-							// 删除当前元素
-							// fout_time << "第 " << i << " 个元素重复，其序列化的值为：" << tempTreeStr << '\n';
-							plan_trees_hash.pop_back();
-							i--;
-						} else{
-							tempIter->second.insert(tempCost);
-						}
-					} else {  // 还没有相同的字符串
-						temp_plan_tree[tempTreeStr] = std::unordered_set<int>{(int)(plan_trees_hash[i].get_cost())};
-					}
-					
-					++i;
-				}
-			}
-            fout_time << "第一阶段(初始化PlanTreeNode结构体)初始计划的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			fout_time << "此时剩余的 plan 个数为: " << plan_trees_hash.size() << '\n';
-            start = std::chrono::steady_clock::now();
-
-			// 初始化的剩余阶段
-			for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init1
-			{
-				plan_trees_hash[i].init(NULL, 2);  // 转变为字符串，用于计算内容差异
-				plan_trees_hash[i].init(NULL, 3);  // 计算自己与自己的树核
-			}
-            fout_time << "初始化剩余阶段的时间为: " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-            start = std::chrono::steady_clock::now();
-
-            max_cost -= plan_trees_hash[0].root->data.cost;
-
-			// 初始化的最终阶段，计算每个 plan 与 best_plan 的结构差异、内容差异和cost差异
-            std::priority_queue<MinDist> dist_record;
-            // 这个代码块用来计算 relevance
-            {
-                double temp_dist;
-				for (std::size_t i = 1; i < plan_trees_hash.size(); ++i)
-				{
-					temp_dist = plan_trees_hash[i].distance_with_best(plan_trees_hash[0]);
-					MinDist temp;
-					temp.index = i;
-					temp.dist = temp_dist;
-					dist_record.push(temp);
-				}
-            }
-            fout_time << "计算每个计划与最优计划距离的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-            start = std::chrono::steady_clock::now();
-
-
-			if(plan_trees_hash.size() <= gARENAK)
-			{
-				gARENAK = plan_trees_hash.size() - 1;
-			}
-
-			// 进行随机的选择
-			std::default_random_engine rand(time(NULL));
-			std::uniform_int_distribution<int> dis(1, plan_trees_hash.size()-1);
-			double distance = -100;
-			std::vector<int> res;
-			for(int iter=0;iter<30;iter++)  // 迭代 30 次
-			{
-				std::unordered_set<int> res_set;  // 记录最终结果的编号
-				res_set.clear();
-				res_set.insert(0);
-				std::size_t num = 0;
-				while(num < gARENAK)
-				{
-					int id = dis(rand) % plan_trees_hash.size();
-					if(res_set.find(id) == res_set.end())  // 原来没有记录
-					{
-						res_set.insert(id);
-						num++;
-					}
-				}
-
-				// 计算本次选出的结果的最小距离
-				double temp_dist = 100.0;
-				{
-					std::vector<int> temp_list{res_set.begin(), res_set.end()};
-					for(std::size_t i=0;i<temp_list.size();i++)
-					{
-						for(std::size_t j=i+1;j<temp_list.size();j++)
-						{
-							double tt_dist = plan_trees_hash[i].distance(plan_trees_hash[j]);
-							if(tt_dist < temp_dist)
-								temp_dist = tt_dist;
-						}
-					}
-				}
-				if(temp_dist > distance)
-				{
-					res.clear();
-					for(auto &n: res_set)
-					{
-						res.push_back(n);
-					}
-					distance = temp_dist;
-				}
-			}
-
-			// 将结果进行发送
-			addResult(0);
-			for(auto iter: res)
-			{
-				if(iter != 0)
-					addResult(iter);
-			}
-		}
-	}
-
-	web_client->Close();
-
-	// 重置全局变量
-	delete web_client;
-	find_index.clear();
-	new_add = 0;
-	max_cost = 0.0;
-	counter = 0;
-	gARENAK = 5;
-}
-
-void FindKCost() {
-	web_client = new Sender;
-	web_client->sha256 = gResFile;
-	plan_trees_send.resize(gARENAK+1);
-
-	if (gARENAK == 0)  // 只选择 QEP
-	{
-		plan_trees_hash.push_back(PlanTreeHash<CExpression>());
-		plan_trees_hash[0].init(plan_buffer.front());
-		addResult(0);
-		std::queue<gpopt::CExpression*> ().swap(plan_buffer);  // 目的在于清空 plan_buffer
-	}
-	else
-	{
-
-		plan_trees_hash.reserve(plan_buffer.size());
-		std::size_t i=0;
-#ifdef ARENA_DEBUG
-		std::ofstream fout_time("/home/wang/timeRecord.txt");
-        if (fout_time.is_open())
-        {
-			fout_time << "计划数量为: " << plan_buffer.size() << std::endl;
-            auto start = std::chrono::steady_clock::now();
-#endif
-            // 初始化的第一阶段，生成 plan_tree 结构
-			// 记录已经出现过的树，如果相同的树重复出现可以直接删除，既可以直接避免结果中出现相同的结果，也可以加快程序执行速度。
-			// 之所以会出现相同的树，是因为 plan_tree 中只保留了 Physical 节点，使得原本不同的执行计划可能变为相同的计划。
-			// 经验证发现，即使保留其它节点，仍然会有重复的 plan 出现，为什么？
-			{
-				std::unordered_map<std::string, std::unordered_set<int>> temp_plan_tree;
-				// while(!plan_buffer.empty())
-				for(auto expressionIter: plan_buffer_for_exp)
-				{
-					plan_trees_hash.push_back(PlanTreeHash<CExpression>());
-					plan_trees_hash[i].init_detailed(expressionIter);
-					plan_trees_hash[i].init(nullptr, 1);
-
-					// 设置 cost 的最大值
-					if (plan_trees_hash[i].get_cost() > max_cost)
-					{
-						max_cost = plan_trees_hash[i].get_cost();
-					}
-
-					// 对树进行序列化，判断是否已经存在相同的树
-					std::string & tempTreeStr = plan_trees_hash[i].str_serialize;
-					fout_time << "第 " << i << " 个 plan 的树结构为: "  << tempTreeStr << '\n';
-					auto tempIter = temp_plan_tree.find(tempTreeStr);
-					if(tempIter != temp_plan_tree.end()){  // 存在相同的字符串
-						int tempCost = (int)(plan_trees_hash[i].get_cost());
-						if (tempIter->second.find(tempCost) != tempIter->second.end()){  // 相同的字符串的 cost 也相同
-							// 删除当前元素
-							// fout_time << "第 " << i << " 个元素重复，其序列化的值为：" << tempTreeStr << '\n';
-							plan_trees_hash.pop_back();
-							i--;
-						} else{
-							tempIter->second.insert(tempCost);
-						}
-					} else {  // 还没有相同的字符串
-						temp_plan_tree[tempTreeStr] = std::unordered_set<int>{(int)(plan_trees_hash[i].get_cost())};
-					}
-					
-					++i;
-				}
-			}
-            fout_time << "第一阶段(初始化PlanTreeNode结构体)初始计划的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			fout_time << "此时剩余的 plan 个数为: " << plan_trees_hash.size() << '\n';
-            start = std::chrono::steady_clock::now();
-
-			// 初始化的剩余阶段
-			for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init1
-			{
-				plan_trees_hash[i].init(NULL, 2);  // 转变为字符串，用于计算内容差异
-				plan_trees_hash[i].init(NULL, 3);  // 计算自己与自己的树核
-			}
-            fout_time << "初始化剩余阶段的时间为: " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-            start = std::chrono::steady_clock::now();
-
-            max_cost -= plan_trees_hash[0].root->data.cost;
-
-			// 初始化的最终阶段，计算每个 plan 与 best_plan 的结构差异、内容差异和cost差异
-            std::priority_queue<MinDist> dist_record;
-            // 这个代码块用来计算 relevance
-            {
-                double temp_dist;
-				for (std::size_t i = 1; i < plan_trees_hash.size(); ++i)
-				{
-					temp_dist = plan_trees_hash[i].distance_with_best(plan_trees_hash[0]);
-					MinDist temp;
-					temp.index = i;
-					temp.dist = temp_dist;
-					dist_record.push(temp);
-				}
-            }
-            fout_time << "计算每个计划与最优计划距离的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-            start = std::chrono::steady_clock::now();
-
-			if(plan_trees_hash.size() < gARENAK)
-			{
-				gARENAK = plan_trees_hash.size() - 1;
-			}
-
-			std::vector<std::pair<int, double>> idCost;
-			std::vector<int> res;
-			idCost.reserve(plan_trees_hash.size());
-			for(std::size_t i=0;i<plan_trees_hash.size();i++)
-			{
-				idCost.push_back(std::make_pair(i, plan_trees_hash[i].get_cost()));
-			}
-
-			sort(idCost.begin(), idCost.end(), [](std::pair<int, double> x, std::pair<int, double> y){ return x.second < y.second;});
-			for(std::size_t i=0;i<gARENAK+1;i++)
-			{
-				res.push_back(idCost[i].first);
-			}
-
-			// 将结果进行发送
-			for(auto iter: res)
-				addResult(iter);
-		}
-	}
-
-	web_client->Close();
-
-	// 重置全局变量
-	delete web_client;
-	find_index.clear();
-	new_add = 0;
-	max_cost = 0.0;
-	counter = 0;
-	gARENAK = 5;
-}
-
-// get a file name to output the execution information
+/************************************************************
+ * get a file name to output the execution information
+ ************************************************************/ 
 std::string getLogFileName()
 {
 	std::string res("/home/");
@@ -5831,6 +5413,276 @@ std::string getLogFileName()
 	}
 
 	return res;
+}
+
+/*************************************************************
+ * the wrapper function of TIPS algorithm
+ * Invoke B-TIPS or I-TIPS algorithms as needed
+ *************************************************************/
+void ARENA_TIPS()
+{
+	if(gMode == 'B')  // B-TIPS mode
+	{
+		web_client = new Sender; // for B-TIPS, we send the results via http
+		web_client->sha256 = gResFile;
+		plan_trees_send.resize(gARENAK+1);
+	}
+	else if(gMode == 'I')  // I-TIPS mode
+	{
+		plan_trees_send.resize(plan_buffer_for_exp.size());
+	}
+
+	if (gARENAK == 0)  // select 0 informative plans, i.e. only show QEP
+	{
+		plan_trees_hash.push_back(PlanTreeHash<CExpression>());
+		plan_trees_hash[0].init(plan_buffer.front());  // the first element of plan_buffer stores the original form of QEP, so we get the information of it
+		addResult(0);  // send QEP
+		std::queue<gpopt::CExpression*> ().swap(plan_buffer);  // clear plan_buffer
+	}
+	else  // Normally, select multiple infomative plans
+	{
+		plan_trees_hash.reserve(plan_buffer.size());  // allocate memory ahead of time to speed up
+		std::string logFile = getLogFileName();  // get the filename for outputting execution information, which is usually '/home/USERNAME/timeReocrd.txt'
+		std::ofstream fout_time(logFile);
+        if (fout_time.is_open())
+        {
+			fout_time << "the plan number is: " << plan_buffer.size() << std::endl;
+            auto start = std::chrono::steady_clock::now();  // used to record execution time
+
+			// initialize data structures for calculating plan difference and plan relevance
+			for(std::size_t i=0;i<plan_buffer_for_exp.size();++i)
+			{
+				plan_trees_hash.push_back(PlanTreeHash<CExpression>());
+				plan_trees_hash[i].init(plan_buffer_for_exp[i]);
+
+				// find the max cost which is used to normalize cost difference
+				if (plan_trees_hash[i].get_cost() > max_cost)
+				{
+					max_cost = plan_trees_hash[i].get_cost();
+				}
+
+			}
+            max_cost -= plan_trees_hash[0].root->data.cost;
+
+			// calculate plan relevance and initialize the max heap
+            std::priority_queue<MinDist> dist_record;
+            {
+                double temp_dist;
+				for (std::size_t i = 1; i < plan_trees_hash.size(); ++i)
+				{
+					temp_dist = plan_trees_hash[i].distance_with_best(plan_trees_hash[0]);
+					MinDist temp;
+					temp.index = i;  // plan id
+					temp.dist = temp_dist;  // plan distance
+					dist_record.push(temp);
+				}
+            }
+
+			// invoke B-TIPS or I-TIPS
+			std::vector<int> res;  // record the ids of the selected plans
+			if (gMode == 'B')
+			{
+				fout_time << "B-TIPS\n";
+				FindK(plan_trees_hash, res, dist_record);  // B-TIPS-Heap
+			}
+			else if (gMode == 'I')
+			{
+				fout_time << "I-TIPS\n";
+				FindK_I(plan_trees_hash, res, dist_record);  // I-TIPS
+			}
+
+			// output information
+            ARENA_result(res);  // output the selected plan information to a file
+            fout_time << "total time(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
+            fout_time.close();
+        }
+	}
+
+	// finishing touches
+	if(gMode == 'B')
+	{
+		web_client->Close();  // close the http client
+	}
+	// reset the global variables
+	delete web_client;
+	plan_trees_hash.clear();
+	find_index.clear();
+	new_add = 0;
+	max_cost = 0.0;
+	counter = 0;
+	gARENAK = 5;
+}
+
+/*************************************************************
+ * random select the informative plans
+ *************************************************************/
+void FindKRandom()
+{
+	web_client = new Sender;
+	web_client->sha256 = gResFile;
+	plan_trees_send.resize(gARENAK+1);
+
+	if (gARENAK == 0)
+	{
+		plan_trees_hash.push_back(PlanTreeHash<CExpression>());
+		plan_trees_hash[0].init(plan_buffer.front());
+		addResult(0);
+		std::queue<gpopt::CExpression*> ().swap(plan_buffer);
+	}
+	else
+	{
+		plan_trees_hash.reserve(plan_buffer.size());
+
+		// initialize data structures for calculating plan difference and plan relevance
+		for(std::size_t i=0;i<plan_buffer_for_exp.size();++i)
+		{
+			plan_trees_hash.push_back(PlanTreeHash<CExpression>());
+			plan_trees_hash[i].init(plan_buffer_for_exp[i]);
+
+			if (plan_trees_hash[i].get_cost() > max_cost)
+			{
+				max_cost = plan_trees_hash[i].get_cost();
+			}
+		}
+		max_cost -= plan_trees_hash[0].root->data.cost;
+
+		// calculate plan relevance
+		for (std::size_t i = 1; i < plan_trees_hash.size(); ++i)
+		{
+			plan_trees_hash[i].distance_with_best(plan_trees_hash[0]);
+		}
+
+		// random select the plans
+		std::default_random_engine rand(time(NULL));
+		std::uniform_int_distribution<int> dis(1, plan_trees_hash.size()-1);
+		double planInterest = -100;  // plan interestingness
+		std::vector<int> res;  // record the final result
+		for(int iter=0;iter<30;iter++)  // iterate 30 times
+		{
+			std::unordered_set<int> res_set;  // record the results generated by this round
+			res_set.insert(0);  // insert QEP
+
+			std::size_t num = 0;
+			while(num < gARENAK)
+			{
+				int id = dis(rand) % plan_trees_hash.size();
+				if(res_set.find(id) == res_set.end())  // this plan has not been recorded yet
+				{
+					res_set.insert(id);
+					num++;
+				}
+			}
+
+			// calcualte the plan interestingness of res_set
+			double temp_dist = 100.0;
+			{
+				std::vector<int> temp_list{res_set.begin(), res_set.end()};
+				for(std::size_t i=0;i<temp_list.size();i++)
+				{
+					for(std::size_t j=i+1;j<temp_list.size();j++)
+					{
+						double tt_dist = plan_trees_hash[i].distance(plan_trees_hash[j]);
+						if(tt_dist < temp_dist)
+							temp_dist = tt_dist;
+					}
+				}
+			}
+
+			// if the result generated this time is better, update
+			if(temp_dist > planInterest)
+			{
+				res.clear();
+				for(auto &n: res_set)
+				{
+					res.push_back(n);
+				}
+				planInterest = temp_dist;
+			}
+		}
+
+		// send result
+		addResult(0);
+		for(auto iter: res)
+		{
+			if(iter != 0)
+				addResult(iter);
+		}
+	}
+
+	// finishing touches
+	web_client->Close();
+	delete web_client;
+	find_index.clear();
+	new_add = 0;
+	max_cost = 0.0;
+	counter = 0;
+	gARENAK = 5;
+}
+
+void FindKCost()
+{
+	web_client = new Sender;
+	web_client->sha256 = gResFile;
+	plan_trees_send.resize(gARENAK+1);
+
+	if (gARENAK == 0)
+	{
+		plan_trees_hash.push_back(PlanTreeHash<CExpression>());
+		plan_trees_hash[0].init(plan_buffer.front());
+		addResult(0);
+		std::queue<gpopt::CExpression*> ().swap(plan_buffer);
+	}
+	else
+	{
+		plan_trees_hash.reserve(plan_buffer.size());
+
+		// initialize data structures for calculating plan difference and plan relevance
+		for(std::size_t i=0;i<plan_buffer_for_exp.size();++i)
+		{
+			plan_trees_hash.push_back(PlanTreeHash<CExpression>());
+			plan_trees_hash[i].init(plan_buffer_for_exp[i]);
+
+			// find the max cost which is used to normalize cost difference
+			if (plan_trees_hash[i].get_cost() > max_cost)
+			{
+				max_cost = plan_trees_hash[i].get_cost();
+			}
+		}
+		max_cost -= plan_trees_hash[0].root->data.cost;
+
+		// calculate plan relevance
+		for (std::size_t i = 1; i < plan_trees_hash.size(); ++i)
+		{
+			plan_trees_hash[i].distance_with_best(plan_trees_hash[0]);
+		}
+
+		// select the plans with the lowest cost
+		std::vector<std::pair<int, double>> idCost;  // each element of idCost is pair<index, cost> of a plan
+		std::vector<int> res;  // record the final result
+		idCost.reserve(plan_trees_hash.size());
+		for(std::size_t i=0;i<plan_trees_hash.size();i++)  // initialize the idCost
+		{
+			idCost.push_back(std::make_pair(i, plan_trees_hash[i].get_cost()));
+		}
+		sort(idCost.begin(), idCost.end(), [](std::pair<int, double> x, std::pair<int, double> y){ return x.second < y.second;});
+		for(std::size_t i=0;i<gARENAK+1;i++)  // select top gARENAK plans
+		{
+			res.push_back(idCost[i].first);
+		}
+
+		// send result
+		for(auto iter: res)
+			addResult(iter);
+	}
+
+	// finishing touches
+	web_client->Close();
+	delete web_client;
+	find_index.clear();
+	new_add = 0;
+	max_cost = 0.0;
+	counter = 0;
+	gARENAK = 5;
 }
 
 // test the effectiveness and efficiency of TIPS
