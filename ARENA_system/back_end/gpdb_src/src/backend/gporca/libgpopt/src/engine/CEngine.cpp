@@ -473,10 +473,9 @@ void ARENATimeExp4Old();  // Exp2 in Section 7.2, suffix Tree old
 
 void ARENAGFPExp();  // Exp 4 in Section 7.2
 
-void ARENAAosExp();  // Exp 5 in Section 7.2
+void ARENALAPSExp();  // Exp 5 in Section 7.2
 
 // assistant function
-void ARENAOutputExp(std::size_t , std::ofstream &);
 void readConfig(char mode='B');
 
 #define ARENA_GTEXP
@@ -497,7 +496,7 @@ double gGFPFilterThreshold = 0.5;  // the plan whose difference is larger than t
 ULLONG gSampleThreshold = 10;  // LAPS threshold
 ULLONG gSampleNumber = 1000;  // number of samples
 bool gisSample = false;  // whether to use the LAPS 
-std::size_t gAosStart = 0;
+std::size_t gLapsStart = 0;
 ULLONG gJoin = 0; // the number of join in SQL
 bool gTEDFlag = false;  // whether to use TreeEditDistance
 
@@ -1229,7 +1228,7 @@ public:
 // GFP strategy
 void ARENAGFPFilter(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep, std::unordered_map<int, CCost>* id2Cost);
 // LAPS strategy
-void ARENAAos(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep);
+void ARENALaps(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep);
 
 int getIndex(char c)
 {
@@ -2513,7 +2512,10 @@ void FindKTimeExpOld(std::vector<T>& plans, std::vector<int>& res, std::unordere
 	}
 }
 
-// B-TIPS-HEAP with plan interestingness
+/************************************************************
+ * It is the same as the B-TIPS algorithm, but records
+ * the plan interestingness after each new plan is selected
+ ************************************************************/
 template<class T>
 double FindKDiffMethodExp(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<MinDist> &dist_record, std::size_t k, std::vector<double> * dist_list = nullptr)
 {
@@ -4559,7 +4561,7 @@ CEngine::SamplePlans()
 		{
 			fout_plan << "use LAPS\n";
 			ullTargetSamples = 10000;
-			ARENAAos(m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTreePlus, filteredId, tempTree);
+			ARENALaps(m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTreePlus, filteredId, tempTree);
 
 			for(auto tempIter=filteredId.begin(); tempIter != filteredId.end(); tempIter++)
 			{
@@ -4645,7 +4647,7 @@ CEngine::SamplePlans()
 	// if use the LAPS strategy, add the plans selected by LAPS to random plans
 	if(gisSample)
 	{
-		gAosStart = plan_buffer_for_exp.size();
+		gLapsStart = plan_buffer_for_exp.size();
 		for(auto id: filteredId)
 		{
 			ULLONG plan_id = (ULLONG)id;
@@ -4714,7 +4716,7 @@ CEngine::SamplePlans()
 		// ARENAGFPExp();
 
 		/* Exp5 */
-		// ARENAAosExp();
+		// ARENALAPSExp();
 	}
 
 	time_end = std::chrono::steady_clock::now();
@@ -5310,22 +5312,24 @@ void ARENA_result(std::vector<int> & res)
 }
 
 
-// 在采样时，将结构相同的 plan 重新加入到采样中
-// 
-// Args:
-//		groupTreePlus: CTreeNode 中的 ARENA_groupTreePlus 成员
-//		record: 用于记录那些需要被剪枝的 plan 的 id
-//		qep: best plan 的结构
-void ARENAAos(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep)
+/************************************************************
+ * LAPS strtegy: It will select all plans with the same structure as the QEP.
+ * For convenience, we currently implement the LAPS strategy based on the GFP code.
+ * that is, we traverse all Group Trees and then select the Group Tree with
+ * the same structure as the QEP, and then obtain the plan with the same structure as the QEP.
+ * In fact, we can just generate the Group Tree with the same structure as QEP.
+ ************************************************************/ 
+void ARENALaps(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep)
 {
 	std::size_t target_len = qep.str_serialize.size();
-	// 遍历 groupTreePlus ，如果某个 GT 的结构和 qep 相同，将其中所有的 plan id 记录
+	// traverse all Group Trees
 	for(auto & iter: groupTreePlus)
 	{
 		if(iter.first.size() != target_len)
 			continue;
 
 		std::string s = ARENASortSTree(iter.first);
+		// if the structure of the Group Tree is the same as that of QEP, record all plans corresponding to this Group Tree.
 		if(s == qep.str_serialize)
 		{
 			for(auto id: iter.second)
@@ -5983,145 +5987,69 @@ void ARENAGFPExp()
 	}
 }
 
-// 用于实验中将某个 id 的 plan 输出到文件
-// 暂时只用于 ARENAAosExp 实验中，并且不需要输出 Plan 的详细信息
-void ARENAOutputExp(std::size_t id, std::ofstream & fout)
+
+/*************************************************************
+ * This function implements the B-TIPS algorithm and is used for
+ * validate the LAPS strategy
+ *************************************************************/ 
+void ARENALAPSExp()
 {
-	// 打开文件，并对其加锁
-	// plan_trees_send.emplace_back(PlanTreeHash<CExpression>());
-	// plan_trees_send.back().init_detailed(plan_trees_hash[id].inOriginal);
-
-	nlohmann::json j;
-	j["id"] = counter+1;
-	j["cost"] = plan_trees_hash[id].root->data.cost; 
-
-	if (counter == 0)  // best plan
-	{
-		j["s_dist"] = 0;
-		j["c_dist"] = 0;
-		j["cost_dist"] = 0; 
-		j["relevance"] = 0;
-	}
-	else
-	{
-		j["s_dist"] = plan_trees_hash[id].structure_dist(plan_trees_hash[0]);
-		j["c_dist"] = plan_trees_hash[id].content_dist(plan_trees_hash[0]);
-		j["cost_dist"] = plan_trees_hash[id].cost_dist(plan_trees_hash[0]);
-		j["relevance"] = plan_trees_hash[id].offset; 
-	}
-
-	// j["content"] = plan_trees_send.back().root->generate_json();  // 只有 content 内容需要使用详细信息，其它部分可以用原来 Plan 的信息
-	std::string result= j.dump();
-	if(fout.is_open())
-	{
-		fout << result << '\n';
-	}
-	counter++;
-}
-
-// 该函数与上面的 ARENAGFPExp 函数类似，是正常的 B-AQP 算法
-// 但是该函数在每选出一个新的 plan 之后，都会记录当前的最小距离，以对比 AOS 算法的效果
-void ARENAAosExp()
-{
-	std::unordered_set<int> plan_join_diff;  // 记录那些与 QEP 只有 content 不同的 plan
 	plan_trees_hash.reserve(plan_buffer.size());
-	std::ofstream fout_time("/home/wang/timeRecord.txt");
+	std::string logFile = getLogFileName();
+	std::ofstream fout_time(logFile);
+
 	if (fout_time.is_open())
 	{
-		for (int turn = 1; turn <= 2; turn++)  // 第一轮是没有 Aos 时的结果，第二轮时有 Aos 时的结果
+		// the first turn is the random sampling and the second turn is the LAPS strategy
+		for (int turn = 1; turn <= 2; turn++)
 		{
-			std::size_t plan_num = turn == 1 ? gAosStart : plan_buffer_for_exp.size();
-			if(plan_num == 0)
+			if(turn == 1)
 			{
-				continue;
+				fout_time << "random sampling:\n";
 			}
-			fout_time << "\n当前候选计划的数量为: " << plan_num << '\n';
-			auto start = std::chrono::steady_clock::now();
-			auto startAll = start;
-			// 初始化的第零阶段，生成 plan_tree 结构
+			if (turn == 2)
 			{
-				int j=0;
-			for (std::size_t i = 0; i < plan_num; i++)
+				fout_time << "\nLAPS strategy:\n";
+			}
+
+			std::size_t plan_num = turn == 1 ? gLapsStart : plan_buffer_for_exp.size();
+			std::unordered_set<ULLONG> removed_plan;  // record the removed plans
+			if(turn == 2)  // for LAPS strategy, randomly remove n plans where n is the number of plans selected by LAPS strategy.
 			{
-				if(turn == 3)  // 第三次，只记录那些内容差异为 2 的 plan
+				std::default_random_engine e(time(NULL));
+				std::uniform_int_distribution<ULLONG> u(0, gLapsStart);
+				while(removed_plan.size() < plan_buffer_for_exp.size()-gLapsStart)
 				{
-					if(i >= gAosStart && plan_join_diff.find(i) == plan_join_diff.end())  // 没有记录
-					{
-						continue;
-					}
+					ULLONG plan_id = u(e);
+					removed_plan.insert(plan_id);
 				}
+			}
+			// initialize data structures for calculating plan difference and plan relevance
+			for (std::size_t i = 0, j=0; i < plan_num; i++)
+			{
+				if(turn == 2 && removed_plan.find(i) != removed_plan.end())
+					continue;
+
 				plan_trees_hash.emplace_back(PlanTreeHash<CExpression>());
-				plan_trees_hash[j].init(plan_buffer_for_exp[i], 0);
-				plan_trees_hash[j].init(nullptr, 1);
-
-				// 设置 cost 的最大值
-				if (plan_trees_hash[j].root->data.cost > max_cost)
-				{
-					max_cost = plan_trees_hash[j].root->data.cost;
-				}
+				plan_trees_hash[j].init(plan_buffer_for_exp[i]);
 				j++;
-			}
-			}
-			fout_time << "第一阶段(初始化PlanTreeNode结构体)初始计划的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
 
-			// 初始化第二阶段，生成节点内容组成的字符串，用于计算内容差异
-			for (std::size_t i = 0; i < plan_trees_hash.size(); i++)
-			{
-				plan_trees_hash[i].init(NULL, 2);
-			}
-			fout_time << "取得由节点内容组成的字符串的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 初始化第三阶段，计算自己与自己的树核
-			for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init3
-			{
-				plan_trees_hash[i].init(NULL, 3);
-			}
-			fout_time << "计算与自己的距离的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
-
-			// 小样本，此时将之前的 cost 读入
-			if(gSampleThreshold <= 1000)
-			{
-				std::ifstream fout_temp("/tmp/aosCost");
-				if(fout_temp.is_open())
+				// find the max cost
+				if (plan_trees_hash[i].root->data.cost > max_cost)
 				{
-					fout_temp >> max_cost;
-					fout_temp.close();
+					max_cost = plan_trees_hash[i].root->data.cost;
 				}
 			}
-			else  // 大样本，将 cost 写入
+			// get the max cost from file
+			std::ifstream fout_temp("/tmp/LapsCost");
+			if(fout_temp.is_open())
 			{
-				std::ofstream fout_temp("/tmp/aosCost");
-				if(fout_temp.is_open())
-				{
-					fout_temp << max_cost << ' ';
-					fout_temp.close();
-				}
+				fout_temp >> max_cost;
+				fout_temp.close();
 			}
-			// max_cost = std::pow(1.0, 14);  // 由于 AOS 策略进行采样，所以max_cost会有区别，为了消除其影响，此处设定最大的 cost
 			max_cost -= plan_trees_hash[0].root->data.cost;
-
-
-			if(gAosStart > 0 && turn == 2)
-			{
-				// 选出那些与 QEP 的内容差异只有2的 AP
-				fout_time << "那些与 QEP 的结构差异仅有2的 plan id 为: ";
-				for(std::size_t t=gAosStart; t < plan_buffer_for_exp.size(); t++)
-				{
-					if(plan_trees_hash[t].content_distG(plan_trees_hash[0]) == 2)
-					{
-						plan_join_diff.insert(t);
-						fout_time << t << "  ";
-					}
-				}
-				fout_time << "\n";
-			}
-
 			
-			// 当使用新方法时，需要用优先队列的形式存储 distance
-			// 初始化的最终阶段，计算每个 plan 与 best_plan 的结构差异、内容差异和cost差异
+			// calculate plan relevance and initialize the max heap
 			std::priority_queue<MinDist> dist_record;
 			{
 				double temp_dist;
@@ -6134,55 +6062,28 @@ void ARENAAosExp()
 					dist_record.push(temp);
 				}
 			}
-			fout_time << "计算每个计划与最优计划距离的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			start = std::chrono::steady_clock::now();
 
-			std::vector<int> res;
-			std::vector<double> dist_res;
-			// 统计寻找最终结果所用时间
-			FindKDiffMethodExp(plan_trees_hash, res, dist_record, 10, &dist_res);  // 新方法
+			std::vector<int> res;  // record the result plan index
+			std::vector<double> dist_res;  // record the plan interestingness after each iteration
+			FindKDiffMethodExp(plan_trees_hash, res, dist_record, 10, &dist_res);
 
+			// output the result
 			fout_time << std::setiosflags(std::ios::fixed)<<std::setprecision(3);
-			fout_time << "查找k个目标值的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-			fout_time << "最终找到结果的编号为：" << '\n';
+			fout_time << "plan id: " << '\n';
 			for(auto i: res){
 				fout_time << i << '\t';
 			}
 			fout_time << '\n';
-			fout_time << "每次添加新的 plan 之后的最小距离为: \n";
+			fout_time << "plan interestingness after adding each plan: \n";
 			for(auto d: dist_res)
 			{
 				fout_time << '*' << d << '\n';
 			}
 
-			// ARENA_result(res);  // 将结果保留到文件中
-			fout_time << "程序整体的执行时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startAll)).count() << std::endl;
-
-			if(turn == 2)
-			{
-				ARENA_result(res);
-			}
-
-			if(turn < 3)
-			{
-				plan_trees_hash.clear();
-				max_cost = 0.0;
-			}
+			// reset the global variables
+			plan_trees_hash.clear();
+			max_cost = 0.0;
 			new_add = 0;
-
-			// if(turn > 1)
-			// {
-			// 	for(auto i: res)
-			// 	{
-			// 		ARENAOutputExp(i, fout_time);
-			// 	}
-			// 	fout_time << "\n\n";
-
-			// 	for(std::size_t i=0;i<plan_num;i++)
-			// 	{
-			// 		ARENAOutputExp(i, fout_time);
-			// 	}
-			// }
 		}
 		fout_time.close();
 	}
