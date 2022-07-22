@@ -471,7 +471,7 @@ void ARENATimeExp4();  // Exp2 in Section 7.2, suffix Tree
 void ARENATimeExp4Hash();  // Exp2 in Section 7.2, Hash Table
 void ARENATimeExp4Old();  // Exp2 in Section 7.2, suffix Tree old
 
-void ARENAGTExp();  // Exp 4 in Section 7.2
+void ARENAGFPExp();  // Exp 4 in Section 7.2
 
 void ARENAAosExp();  // Exp 5 in Section 7.2
 
@@ -493,8 +493,9 @@ char gMode = 'B';  // B-TIPS or I-TIPS
 std::size_t gARENAK = 5;  // display 5 informative plans defaultly
 bool gIsGTFilter = false;  // Whether to use the GFP filtering algorithm
 int gGTNumThreshold = 50000;  // GFP threshold
-double gGTFilterThreshold = 0.5;  // the plan whose difference is larger than this value will be filtered out
+double gGFPFilterThreshold = 0.5;  // the plan whose difference is larger than this value will be filtered out.
 ULLONG gSampleThreshold = 10;  // LAPS threshold
+ULLONG gSampleNumber = 1000;  // number of samples
 bool gisSample = false;  // whether to use the LAPS 
 std::size_t gAosStart = 0;
 ULLONG gJoin = 0; // the number of join in SQL
@@ -1226,7 +1227,7 @@ public:
 };
 
 // GFP strategy
-void ARENAGTFilter(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep, std::unordered_map<int, CCost>* id2Cost);
+void ARENAGFPFilter(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep, std::unordered_map<int, CCost>* id2Cost);
 // LAPS strategy
 void ARENAAos(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep);
 
@@ -4456,14 +4457,15 @@ CEngine::SamplePlans()
 	std::ofstream fout_plan("/tmp/Plans");
 
 	readConfig();
-	// If /tmp/gtArg exists, the parameters about LAPS and GFP will be read from it, used for experiment
+	// if /tmp/gtArg exists, the parameters about LAPS and GFP will be read from it, used for experiment
 	std::ifstream fin_gt("/tmp/gtArg");
 	if(fin_gt.is_open())
 	{
-		// read the first line, the format is : GFP threshold, difference threshold, LAPS threshold
+		// read the first line, the format is : (GFP threshold, difference threshold, LAPS threshold, number of samples)
 		fin_gt >> gGTNumThreshold;
-		fin_gt >> gGTFilterThreshold;
+		fin_gt >> gGFPFilterThreshold;
 		fin_gt >> gSampleThreshold;
+		fin_gt >> gSampleNumber;
 		fin_gt.close();
 	}
 
@@ -4475,7 +4477,7 @@ CEngine::SamplePlans()
 	fout_plan << "lambda: " << gLambda << '\n';
 	fout_plan << "resultFileName: " << gResFile << '\n';
 	fout_plan << "GFP threshold: " << gGTNumThreshold << '\n';
-	fout_plan << "distance threshold: " << gGTFilterThreshold << '\n';
+	fout_plan << "distance threshold: " << gGFPFilterThreshold << '\n';
 	fout_plan << "LAPS threshold: " << gSampleThreshold << '\n';
 	if(gTEDFlag)
 		fout_plan << "use Tree Edit Flag to calculate structure difference.\n";
@@ -4541,9 +4543,9 @@ CEngine::SamplePlans()
 		{
 			fout_plan << "use GFP\n";
 #ifdef ARENA_COSTFT
-			ARENAGTFilter(m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTreePlus, filteredId, tempTree, &id2Cost);
+			ARENAGFPFilter(m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTreePlus, filteredId, tempTree, &id2Cost);
 #else
-			ARENAGTFilter(m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTreePlus, filteredId, tempTree, nullptr);
+			ARENAGFPFilter(m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTreePlus, filteredId, tempTree, nullptr);
 #endif
 			fout_plan << "the plans need to be filtered out:  ";
 			for(auto tempIter=filteredId.begin(); tempIter != filteredId.end(); tempIter++)
@@ -4709,7 +4711,7 @@ CEngine::SamplePlans()
 		ARENA_TIPS();
 
 		/* Exp4 */
-		// ARENAGTExp();
+		// ARENAGFPExp();
 
 		/* Exp5 */
 		// ARENAAosExp();
@@ -5243,7 +5245,7 @@ void readConfig(char mode)
 				gMode = s[0];
 				break;
 			case 7:
-				gGTFilterThreshold = std::stod(s);
+				gGFPFilterThreshold = std::stod(s);
 				break;
 			case 8:
 				gJoin = std::stoi(s);
@@ -5332,25 +5334,21 @@ void ARENAAos(std::unordered_map<std::string, std::vector<int>> & groupTreePlus,
 	}
 }
 
-// 利用 Group Tree 对 plan 进行过滤和剪枝
-// 
-// Args:
-//		groupTreePlus: CTreeNode 中的 ARENA_groupTreePlus 成员
-//		record: 用于记录那些需要被剪枝的 plan 的 id
-//		qep: best plan 的结构
-//		id2Csot: 记录 id 到 cost 的映射，便于根据 cost 进行过滤
-void ARENAGTFilter(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep, std::unordered_map<int, CCost>* id2Cost)
+/************************************************************
+ * Use GFP or GFP&Cost strategy to filter useless plans
+ ************************************************************/ 
+void ARENAGFPFilter(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep, std::unordered_map<int, CCost>* id2Cost)
 {
-	std::vector<gtTree> gtList;
-	std::ofstream fout_dist("/tmp/gtDist");
-	if(nullptr == id2Cost)
+	std::vector<gtTree> gtList;  // class gtTree is used to serialize the Group Tree
+	std::ofstream fout_dist("/tmp/gtDist");  // output the Group Tree information, used for Exp4
+	if(nullptr == id2Cost)  // this variable is only used when using the GFP&Cost strategy
 	{
 		id2Cost = nullptr;
 	}
 
-#ifdef ARENA_COSTFT
+#ifdef ARENA_COSTFT  // by default, the GFP strategy is used, if this macro is defined, the GFP&Cost strategy is enabled
 	double tMinCost = qep.get_cost();
-	double tMaxCost = 0.0;
+	double tMaxCost = 0.0;  // get the max cost, used to get the cost difference
 	for(auto iter = id2Cost->begin();iter != id2Cost->end(); iter++)
 	{
 		double temp = iter->second.Get();
@@ -5360,26 +5358,28 @@ void ARENAGTFilter(std::unordered_map<std::string, std::vector<int>> & groupTree
 	tMaxCost -= tMinCost;
 #endif
 	
-	// 初始化 Group Tree
+	// initialize the gtTree
 	for(auto iter=groupTreePlus.begin(); iter!=groupTreePlus.end();iter++)
 	{
 		gtList.emplace_back(gtTree(iter));
 		gtList.back().init();
 	}
 
-	// 过滤结构差异过大的 Group Tree
+	// traverse each Group Tree and determine if it needs to be filtered out
 	double temp=0.0;
 	for(auto & t: gtList)
 	{
-		temp = qep.structure_dist(t);
+		temp = qep.structure_dist(t);  // the structure difference between current Group Tree and QEP
 		fout_dist << t.inIter->first << "    " << temp << '\n';
-		if(temp > gGTFilterThreshold)  // 大于结构差异的阈值
+
+		// while experimenting, gGFPFilterThreshold can be set via the configuration file '/tmp/gtArg', by default we set it to 0.5
+		if(temp > gGFPFilterThreshold)  // if the difference is larger than threshold
 		{
-			for(int tempId: t.inIter->second)  // 遍历每一个 id
+			for(int tempId: t.inIter->second)  // record the plan ids corresponding to this Group Tree
 			{
-#ifdef ARENA_COSTFT
+#ifdef ARENA_COSTFT  // if the GFP&Cost strategy is enabled, it is also necessary to determine whether the cost difference is greater than the threshold
 				temp = id2Cost->at(tempId).Get();
-				if((temp-tMinCost)/tMaxCost >= gGTFilterThreshold)
+				if((temp-tMinCost)/tMaxCost >= gGFPFilterThreshold)
 				{
 					record.insert(tempId - 1);
 				}
@@ -5921,71 +5921,35 @@ void ARENATimeExp4Hash()
 	}
 }
 
-// 该函数就是正常的 B-AQPS 算法，但是不会发送数据
-// 参数的修改是在 SamplePlans 函数中发生的
-void ARENAGTExp()
+/*************************************************************
+ * This function implements the B-TIPS algorithm, but does
+ * not send data, and is used for the experiment of the GFP strategy
+ *************************************************************/ 
+void ARENAGFPExp()
 {
 	plan_trees_hash.reserve(plan_buffer.size());
-	std::ofstream fout_time("/home/wang/timeRecord.txt");
+	std::string logFile = getLogFileName();
+	std::ofstream fout_time(logFile);
 	if (fout_time.is_open())
 	{
-		fout_time << "\n*当前候选计划的数量为: " << plan_buffer.size() << '\n';
+		fout_time << "\n*the number of alternative plans: " << plan_buffer.size() << '\n';
 		auto start = std::chrono::steady_clock::now();
-		auto startAll = start;
-		// 初始化的第零阶段，生成 plan_tree 结构
+
+		// initialize data structures for calculating plan difference and plan relevance
 		for (std::size_t i = 0; i < plan_buffer_for_exp.size(); i++)
 		{
 			plan_trees_hash.emplace_back(PlanTreeHash<CExpression>());
-			plan_trees_hash[i].init(plan_buffer_for_exp[i], 0);
+			plan_trees_hash[i].init(plan_buffer_for_exp[i]);
 
-			// 设置 cost 的最大值
+			// find the max cost which is used to normalize cost difference
 			if (plan_trees_hash[i].root->data.cost > max_cost)
 			{
 				max_cost = plan_trees_hash[i].root->data.cost;
 			}
 		}
-		fout_time << "第一阶段(初始化PlanTreeNode结构体)初始计划的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-		start = std::chrono::steady_clock::now();
-
-		// 初始化第一阶段，生成一棵树的所有统计信息
-		for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init1
-		{
-			plan_trees_hash[i].init(NULL, 1);
-		}
-		fout_time << "生成子树统计信息的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-		start = std::chrono::steady_clock::now();
-
-		// 初始化第二阶段，生成节点内容组成的字符串，用于计算内容差异
-		for (std::size_t i = 0; i < plan_trees_hash.size(); i++)
-		{
-			plan_trees_hash[i].init(NULL, 2);
-		}
-		fout_time << "取得由节点内容组成的字符串的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-		start = std::chrono::steady_clock::now();
-
-		// 初始化第三阶段，计算自己与自己的树核
-		for(std::size_t i=0;i<plan_trees_hash.size();i++)  // init3
-		{
-			plan_trees_hash[i].init(NULL, 3);
-		}
-		fout_time << "计算与自己的距离的时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-		start = std::chrono::steady_clock::now();
-		fout_time << "最大的 cost 为: " << max_cost << '\n';
-
 		max_cost -= plan_trees_hash[0].root->data.cost;
 		
-
-		// 当使用旧方法时，则用 hash 表存储 distance
-		// std::unordered_map<int, double> dist_record;
-		// for(std::size_t i=1;i<plan_trees_hash.size();++i)
-		// {
-		// 	double temp_dist = plan_trees_hash[i].distance_with_best(plan_trees_hash[0]);
-		// 	dist_record[i] = temp_dist;
-		// }
-
-		// 当使用新方法时，需要用优先队列的形式存储 distance
-		// 初始化的最终阶段，计算每个 plan 与 best_plan 的结构差异、内容差异和cost差异
-		// 这个代码块用来计算 relevance
+		// calculate plan relevance and initialize the max heap
 		std::priority_queue<MinDist> dist_record;
 		{
 			double temp_dist;
@@ -5998,28 +5962,21 @@ void ARENAGTExp()
 				dist_record.push(temp);
 			}
 		}
-		fout_time << "计算每个计划与最优计划距离的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-		start = std::chrono::steady_clock::now();
 
-		std::vector<int> res;
-		double min_dist = 0.0;
-		// 统计寻找最终结果所用时间
-		min_dist = FindKDiffMethodExp(plan_trees_hash, res, dist_record, 10);  // 新方法
-		// FindKTimeExpOld(plan_trees_hash, res, dist_record, tempPlanNum);  // 旧方法
+		std::vector<int> res;  // record the result plans id
+		double planInterest = 0.0;  // record plan interestingness
+
+		planInterest = FindKDiffMethodExp(plan_trees_hash, res, dist_record, 10);  // B-TIPS-Heap
 		fout_time << std::setiosflags(std::ios::fixed)<<std::setprecision(3);
-		fout_time << "*最小距离为: " << min_dist << '\n';
-		fout_time << "查找k个目标值的时间(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
-		fout_time << "最终找到结果的编号为：" << '\n';
+		fout_time << "*plan interestingness: " << planInterest << '\n';
+		fout_time << "plan id: " << '\n';
 		for(auto i: res){
 			fout_time << i << '\t';
 		}
 		fout_time << '\n';
+		fout_time << "*total time(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
 
-		// ARENA_result(res);  // 将结果保留到文件中
-		fout_time << "*程序整体的执行时间为(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startAll)).count() << std::endl;
-		// fout_time << "max_cost = " << max_cost << '\n';
-
-		// 重置全局变量
+		// reset the global variables
 		new_add = 0;
 		max_cost = 0.0;
 		fout_time.close();
@@ -6062,7 +6019,7 @@ void ARENAOutputExp(std::size_t id, std::ofstream & fout)
 	counter++;
 }
 
-// 该函数与上面的 ARENAGTExp 函数类似，是正常的 B-AQP 算法
+// 该函数与上面的 ARENAGFPExp 函数类似，是正常的 B-AQP 算法
 // 但是该函数在每选出一个新的 plan 之后，都会记录当前的最小距离，以对比 AOS 算法的效果
 void ARENAAosExp()
 {
