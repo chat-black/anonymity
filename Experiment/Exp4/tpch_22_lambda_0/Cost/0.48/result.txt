@@ -1,0 +1,6 @@
+
+*the number of informative plans: 41854
+*plan interestingness: 0.395
+plan id:
+0	13351	13354	13932	13935	12153	12734	12737	12156	8570	8573	
+*total time(ms): 3131
