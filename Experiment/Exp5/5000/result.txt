@@ -1,0 +1,29 @@
+random sampling:
+plan id: 
+0	4	107	3738	3280	4761	806	4354	522	3574	973	
+plan interestingness after adding each plan: 
+*0.385
+*0.377
+*0.377
+*0.374
+*0.366
+*0.365
+*0.363
+*0.362
+*0.361
+*0.360
+
+LAPS strategy:
+plan id: 
+0	4668	4	3349	4826	4745	4584	4917	4656	1666	4592	
+plan interestingness after adding each plan: 
+*0.387
+*0.385
+*0.377
+*0.376
+*0.375
+*0.374
+*0.372
+*0.372
+*0.366
+*0.366
