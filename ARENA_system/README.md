@@ -4,7 +4,11 @@ Here is all the source code for the ARENA system.
     * back_end/conf/ is some configuration files that will be used when installing backend.
     * back_end/data/ is the data used for experiments and tests. Since the IMDB data is too large, we only provide the TPCH data here.
     * back_end/gp-xerces/ is a dependency library when installing the database.
-    * back_end/gpdb_src/ is the source code of database(GreenPlum) which contains the ORCA optimizer. Also, the algorithms we proposed (eg, TIPS and GFP) have been integrated into the database source code. The codes of these algorithms and experiments mainly involve two files (back_end/gpdb_src/src/backend/gporca/libgpopt/src/engine/CEngine.cpp) and (back_end/gpdb_src/src/backend/gporca/libgpopt/include/gpopt/search/CTreeMap.h).
+    * back_end/gpdb_src/ is the source code of database(GreenPlum) which contains the ORCA optimizer. Also, the algorithms we proposed (eg, TIPS and GFP) have been integrated into the database source code. The codes of these algorithms and experiments mainly involve two files (back_end/gpdb_src/src/backend/gporca/libgpopt/src/engine/CEngine.cpp) and (back_end/gpdb_src/src/backend/gporca/libgpopt/include/gpopt/search/CTreeMap.h). The functions corresponding to each algorithm are as follows:
+        * `ARENA_TIPS` is the wrapper function for **TIPS** algorithm. It will call the **I-TIPS** algorithm (function `FindK_I`) or the **B-TIPS-Heap** algorithm (function `FindK`) as needed. All of them are in *CEngine.cpp*.
+        * `ARENAGFPFilter` implements the **GFP** or **GFP&Cost** filter strategy which is in *CEngine.cpp*. The **Group Forest** is built in *CTreeMap.h*. And the macro `ARENA_COSTFT` defined in *CTreeMap.h* is used to control whether the **GFP** strategy or the **GFP&Cost** strategy is used.
+        * `ARENALaps` implemets the **LAPS** strategy and it is in *CEngine.cpp*. For convenience, we currently use the **Group Forest** in the **GFP** strategy to find the plans which have the same structure as QEP. But this is not necessary, we will improve it later.
+        * `CEngine::SamplePlans` in *CEngine.cpp* is the function that is used to find all valid alternative plans. 
     * back_end/install_(1/2).sh is the install script.
 * front_end/ is the source code for the front end and web server.
 

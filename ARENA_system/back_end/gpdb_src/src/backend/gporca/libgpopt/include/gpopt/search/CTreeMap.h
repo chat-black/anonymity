@@ -18,7 +18,7 @@
 #define GPOPT_CTreeMap_H
 
 #define ARENA_GTFILTER
-// #define ARENA_COSTFT
+// #define ARENA_COSTFT  /* if this macro is present, the GFP&Cost strategy is used, otherwise the GFP strategy is used. */
 
 #include "gpos/base.h"
 #include "gpos/common/CHashMap.h"
