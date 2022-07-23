@@ -5,20 +5,20 @@
 #include <vector>
 #include <curl/curl.h>
 
-/*********************
- * 利用 libcurl 库实现 http 客户端，用于将最终结果发送给 web 服务器
- **********************/
+/***************************************************
+ * use the libcurl to achieve a http client and send the results to web server
+ ***************************************************/
 struct Sender
 {
-    std::vector<char*> record;  // 记录需要发送的信息
+    std::vector<char*> record;  // record the data needed to send
     std::vector<char*> record_id;
-    std::string response;  // 获得 web 服务器响应的结果
-    std::string sha256;  // SQL语句的sha256值
+    std::string response;  // http response
+    std::string sha256;  // identifier of the SQL statement
     std::string url;
     CURL* curl;
     CURLcode ret;
 public:
-    // 初始化套接字，并与服务器建立连接
+    // initialize the socket and connect to the server
     Sender(int port=5000)
     {
         curl = nullptr;
@@ -26,14 +26,13 @@ public:
         url = std::string("http://127.0.0.1:") + std::to_string(port) + std::string("/arena_inner/");
     }
 
-    ~Sender(){  // 释放内存
+    ~Sender(){  // release memory
         for (std::size_t i=0;i<record.size();i++){
             delete [] record[i];
             delete [] record_id[i];
         }
     }
 
-    // 回调函数，得到相应内容
 	static int write_data(void *buffer, int size, int nmemb, void *userp)
 	{
 		std::string *str = dynamic_cast<std::string *>((std::string *) userp);
@@ -41,36 +40,33 @@ public:
 		return nmemb;
 	}
 
-
-	// 判断是否与服务器成功建立连接
     bool isStart()
     {
         return curl != nullptr;
     }
 
-
-    // 关闭客户端，并真正的发送数据
+    // close http client and send the data
     bool Close()
 	{
 		struct curl_httppost *post = NULL;
 		struct curl_httppost *last = NULL;
 		if (curl)
 		{
-			curl_easy_setopt(curl, CURLOPT_URL, (char *) url.c_str());	 //指定url
+			curl_easy_setopt(curl, CURLOPT_URL, (char *) url.c_str());
 
-            curl_formadd( &post, &last, CURLFORM_PTRNAME, "hash", CURLFORM_PTRCONTENTS, sha256.c_str(), CURLFORM_END);  // SQL 的摘要
+            curl_formadd( &post, &last, CURLFORM_PTRNAME, "hash", CURLFORM_PTRCONTENTS, sha256.c_str(), CURLFORM_END);
             for (std::size_t i=0;i<record.size();i++){
 				curl_formadd(
 					&post, &last, CURLFORM_PTRNAME, record_id[i],
 					CURLFORM_PTRCONTENTS, record[i],
-					CURLFORM_END);	//form-data key 和 value
+					CURLFORM_END);
 			}
 
-			curl_easy_setopt(curl, CURLOPT_HTTPPOST, (void *)post);	 //构造post参数
-			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, (void *)Sender::write_data);  //绑定相应
-			curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *) (&response));  //绑定响应内容的地址
+			curl_easy_setopt(curl, CURLOPT_HTTPPOST, (void *)post);
+			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, (void *)Sender::write_data);
+			curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *) (&response));
 
-			ret = curl_easy_perform(curl);	//执行请求
+			ret = curl_easy_perform(curl);
             curl_easy_cleanup(curl);
 			if (ret == 0)
 			{

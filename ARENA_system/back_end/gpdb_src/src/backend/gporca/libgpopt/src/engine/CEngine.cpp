@@ -105,7 +105,6 @@ using namespace gpopt;
 
 
 //************************ARENA**************************/
-#define ARENA_DEBUG
 #define ARENA_PHYSICAL
 
 // Sort the serialized tree
@@ -478,8 +477,6 @@ void ARENALAPSExp();  // Exp 5 in Section 7.2
 // assistant function
 void readConfig(char mode='B');
 
-#define ARENA_GTEXP
-
 
 ///**************************************************/
 /// Some global variables that will be used
@@ -505,7 +502,6 @@ double max_cost = 1.0;
 std::string gConf;
 std::string gResFile;
 Sender* web_client = nullptr;
-char edgePrefix[2]={'[', ']'};
 int new_add = 0;
 std::unordered_set<ULLONG> find_index;
 int counter = 0;
@@ -4455,18 +4451,18 @@ CEngine::SamplePlans()
 	//************************ARENA**************************/
 	auto time_start = std::chrono::steady_clock::now();
 	auto all_start = time_start;
-	std::ofstream fout_time("/tmp/time_record");
-	std::ofstream fout_plan("/tmp/Plans");
+	std::ofstream fout_time("/tmp/time_record");  // record the execution time of different parts
+	std::ofstream fout_plan("/tmp/Plans");  // record some information used to debug
 
 	readConfig();
 	// if /tmp/gtArg exists, the parameters about LAPS and GFP will be read from it, used for experiment
 	std::ifstream fin_gt("/tmp/gtArg");
 	if(fin_gt.is_open())
 	{
-		// read the first line, the format is : (GFP threshold, difference threshold, LAPS threshold, number of samples)
+		// read the first line, the format is : (GFP threshold, difference threshold, number of join in this sql, number of samples)
 		fin_gt >> gGTNumThreshold;
 		fin_gt >> gGFPFilterThreshold;
-		fin_gt >> gSampleThreshold;
+		fin_gt >> gJoin;
 		fin_gt >> gSampleNumber;
 		fin_gt.close();
 	}
@@ -4479,8 +4475,10 @@ CEngine::SamplePlans()
 	fout_plan << "lambda: " << gLambda << '\n';
 	fout_plan << "resultFileName: " << gResFile << '\n';
 	fout_plan << "GFP threshold: " << gGTNumThreshold << '\n';
-	fout_plan << "distance threshold: " << gGFPFilterThreshold << '\n';
+	fout_plan << "Distance threshold: " << gGFPFilterThreshold << '\n';
 	fout_plan << "LAPS threshold: " << gSampleThreshold << '\n';
+	fout_plan << "Join number: " << gJoin << '\n';
+	fout_plan << "Sample number: " << gSampleNumber << '\n';
 	if(gTEDFlag)
 		fout_plan << "use Tree Edit Flag to calculate structure difference.\n";
 	else
@@ -4502,7 +4500,7 @@ CEngine::SamplePlans()
 	gisSample = gJoin >= gSampleThreshold;
 	if(gisSample)
 	{
-		gIsGTFilter = false;
+		gIsGTFilter = false;  // if sampling with the LAPS strategy, the GFP algorithm will not be used again
 	}
 	std::unordered_set<int> filteredId;  // the plans to be filtered
 	//***********************ARENA END***************************/
@@ -4560,7 +4558,7 @@ CEngine::SamplePlans()
 		if(gisSample)
 		{
 			fout_plan << "use LAPS\n";
-			ullTargetSamples = 10000;
+			ullTargetSamples = gSampleNumber;
 			ARENALaps(m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTreePlus, filteredId, tempTree);
 
 			for(auto tempIter=filteredId.begin(); tempIter != filteredId.end(); tempIter++)
@@ -4573,26 +4571,17 @@ CEngine::SamplePlans()
 		fout_plan << tempTree.root->generate_json();
 		fout_plan << "\n";
 	}
-	//************************ARENA END**************************/
 
-	// generate randomized seed using local time
-	TIMEVAL tv;
-	syslib::GetTimeOfDay(&tv, NULL /*timezone*/);
-	ULONG seed = CombineHashes((ULONG) tv.tv_sec, (ULONG) tv.tv_usec);
-
-	// set maximum number of iterations based number of samples
-	// we use maximum iteration to prevent infinite looping below
-	ULLONG ull = 0;
-
+	/* The code annotated below is used for LAPS experiments (Exp5)*/
+	/* it reads all valid plan ids */
 	// std::vector<ULLONG> plan_id_list;
 	// {
-	// 	plan_id_list.reserve(40000);
 	// 	std::ifstream fin_temp("/tmp/plan_id.txt");
 	// 	if(fin_temp.is_open())
 	// 	{
-	// 		fout_plan << "成功打开 id 文件\n";
+	// 		fout_plan << "open plan_id.txt successfully\n";
 	// 		ULLONG temp_id = 0;
-	// 		for(int i=0;i<40000;i++)
+	//		while(!fin_temp.eof() && fin_temp.peek() != EOF)
 	// 		{
 	// 			fin_temp >> temp_id;
 	// 			plan_id_list.push_back(temp_id);
@@ -4601,19 +4590,26 @@ CEngine::SamplePlans()
 	// 	}
 	// }
 
+	//************************ARENA END**************************/
+
+	// generate randomized seed using local time
+	TIMEVAL tv;
+	syslib::GetTimeOfDay(&tv, NULL /*timezone*/);
+	ULONG seed = CombineHashes((ULONG) tv.tv_sec, (ULONG) tv.tv_usec);
+	ULLONG ull = 0;
 	while (ull < ullTargetSamples)
 	{
 		// generate id of plan to be extracted
 		ULLONG plan_id = ull;
 		
-		if(gisSample)  // if use the LAPS strategy
+		if(gisSample)  // if use the LAPS strategy, generate the plan id randomly
 		{
 			plan_id = UllRandomPlanId(&seed);
-			// plan_id = plan_id_list[(int)plan_id];
+			// plan_id = plan_id_list[(int)plan_id];  /* used for LAPS experiment */
 		}
 		fout_plan << "plan id: " << plan_id << '\n';
 
-		if(gIsGTFilter && filteredId.find(plan_id) != filteredId.end())  // if use the GFP strategy
+		if(gIsGTFilter && filteredId.find(plan_id) != filteredId.end())  // if use the GFP strategy and this plan is filtered out
 		{
 			fout_plan << "filter out plan: " << plan_id << '\n';
 			ull++;
@@ -4621,12 +4617,11 @@ CEngine::SamplePlans()
 		}
 
 		pexpr = NULL;
-		
 		if (FValidPlanSample(pec, plan_id, &pexpr))
 		{
 			plan_buffer.push(pexpr);
 			plan_buffer_for_exp.push_back(pexpr);
-			{
+			{  // output the plan information
 				PlanTreeHash<CExpression> tempTree;
 				tempTree.init(pexpr);
 				fout_plan << '$' << tempTree.root->generate_json();
@@ -4636,9 +4631,7 @@ CEngine::SamplePlans()
 		}
 		else
 		{
-#ifdef ARENA_DEBUG
 			fout_plan << "# FValidPlanSample fail\n";
-#endif
 		}
 
 		ull++;
@@ -4674,6 +4667,7 @@ CEngine::SamplePlans()
 		}
 	}
 
+	// output some information which is used to debug
 	fout_plan << "ull: " << ull << "\tullTargetSamples: " << ullTargetSamples << std::endl;
 	fout_plan << "the number of valid plans is: " << plan_buffer.size() << '\n';
 	if (gResFile.size() == 0 || gResFile.compare("###") == 0){
@@ -4685,11 +4679,11 @@ CEngine::SamplePlans()
 	auto time_end = std::chrono::steady_clock::now();
 	if (fout_time.is_open())
 	{
-		fout_time << "The sampling time is: " << (std::chrono::duration_cast<std::chrono::milliseconds>(time_end - time_start)).count() << "ms\n";
+		fout_time << "time used to get the plan(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(time_end - time_start)).count() << "ms\n";
 	}
 	time_start = std::chrono::steady_clock::now();
 
-	// Normal ARENA system or experiment
+	// normal ARENA system or experiment
 	if (gResFile.size() > 0 && gResFile.compare("###") != 0)
 	{
 		fout_time << "normal ARENA system\n";
@@ -4706,11 +4700,11 @@ CEngine::SamplePlans()
 		// ARENATimeExp3Cost();
 
 		/* Exp2 */
-		ARENATimeExp4();
+		// ARENATimeExp4();
 		// ARENATimeExp4Hash();
 
 		/* Exp3 */
-		ARENA_TIPS();
+		// ARENA_TIPS();
 
 		/* Exp4 */
 		// ARENAGFPExp();
