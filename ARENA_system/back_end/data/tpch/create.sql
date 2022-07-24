@@ -68,3 +68,14 @@ CREATE TABLE LINEITEM ( L_ORDERKEY    INTEGER NOT NULL,
                              L_SHIPMODE     CHAR(10) NOT NULL,
                              L_COMMENT      VARCHAR(44) NOT NULL);
 
+create view revenue (supplier_no, total_revenue) as
+	select
+		l_suppkey,
+		sum(l_extendedprice * (1 - l_discount))
+	from
+		lineitem
+	where
+		l_shipdate >= date '1993-10-01'
+		and l_shipdate < date '1997-10-01' + interval '3' month
+	group by
+		l_suppkey;

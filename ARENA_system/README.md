@@ -2,7 +2,7 @@
 Here is all the source code for the ARENA system.
 * **back_end/** is the database and TIPS algorithm source code.
     * **back_end/conf/** is some configuration files that will be used when installing backend.
-    * **back_end/data/** is the data used for experiments and tests. Since the IMDB data is too large, we only provide the TPCH data here.
+    * **back_end/data/** is the data used for experiments and tests. Since the IMDB data is too large, we only provide the TPCH data here. The IMDB data can be downloaded from <http://homepages.cwi.nl/~boncz/job/imdb.tgz>.
     * **back_end/gp-xerces/** is a dependency library when installing the database.
     * **back_end/gpdb_src/** is the source code of database(GreenPlum) which contains the ORCA optimizer. Also, the algorithms we proposed (e.g. **TIPS** and **GFP**) have been integrated into the database source code. The codes of these algorithms and experiments mainly involve two files (back_end/gpdb_src/src/backend/gporca/libgpopt/src/engine/CEngine.cpp) and (back_end/gpdb_src/src/backend/gporca/libgpopt/include/gpopt/search/CTreeMap.h). The functions corresponding to each algorithm are as follows:
         * `ARENA_TIPS` is the wrapper function for **TIPS** algorithm. It will call the **I-TIPS** algorithm (function `I_TIPS`) or the **B-TIPS-Heap** algorithm (function `B_TIPS_Heap`) as needed. All of them are in *CEngine.cpp*.
