@@ -9,11 +9,11 @@ This directory contains experimental data and experimental scripts related to Ex
     - **cost.txt** in each subdirectory is the result of Cost.
     - **draw.py** in each subdirectory is the drawing script.
     - **efficiency.png** in each subdirectory is the comparison figure of different algorithms.
-- **sql** contains all the SQL statements tested by this experiment.
-- **execute.py** is the experiment script used to perform this experiment. It can automatically execute each statement under **sql** and move the output information to the target location.
+- **sql/** contains all the SQL statements tested by this experiment.
+- **execute.py** is the experiment script used to perform this experiment. It can automatically execute each statement under **sql/** and move the output information to the target location.
 - **draw.py** is the plotting script used in this experiment. It moves into each subdirectory and calls **draw.py** in that directory.
 
 # Conduct Experiment
-This experiment mainly involves three functions `ARENATimeExp3`, `ARENATimeExp3Random`, and `ARENATimeExp3Cost` in file *ARENA_system/back_end/gpdb_src/src/backend/gporca/libgpopt/src/engine/CEngine.cpp*. They represent three different algorithms, **B-TIPS**, **Random** and **Cost**, respectively. By adjusting part of the code, `ARENATimeExp3` can implement **B-TIPS-Basic** or **B-TIPS-Heap**.
+This experiment mainly involves three functions `ARENAExp1`, `ARENAExp1Random`, and `ARENAExp1Cost` in file *ARENA_system/back_end/gpdb_src/src/backend/gporca/libgpopt/src/engine/CEngine.cpp*. They represent three different algorithms, **B-TIPS**, **Random** and **Cost**, respectively. By adjusting part of the code, `ARENAExp1` can implement **B-TIPS-Basic** or **B-TIPS-Heap**.
 
-If you want to perform this experiment, you need to choose one of `ARENATimeExp3`, `ARENATimeExp3Random`, and `ARENATimeExp3Cost` to execute, and the other two need to be commented in `CEngine::SamplePlans`. Moreover, in order for **execute.py** to rename the result file correctly, the `move_result` part of the `main` function needs to be commented out as well.
+If you want to perform this experiment, you need to choose one of `ARENAExp1`, `ARENAExp1Random`, and `ARENAExp1Cost` to execute, and the other two need to be commented in `CEngine::SamplePlans`. Moreover, in order for **execute.py** to rename the result file correctly, the `move_result` part of the `main` function needs to be commented out as well.

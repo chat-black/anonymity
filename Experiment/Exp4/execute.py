@@ -18,7 +18,7 @@ def write_config():
     write number_threshold and dist_threshold to /tmp/gtArg
     """
     with open('/tmp/gtArg', 'w') as fout:
-        fout.write('{} {} 1000000 1000000\n'.format(number_threshold, dist_threshold))
+        fout.write('{} {} 0 1000000\n'.format(number_threshold, dist_threshold))
 
 def get_dist_list():
     """

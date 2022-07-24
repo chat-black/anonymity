@@ -6,12 +6,7 @@ marker = ['o', 's', '*', '+']
 
 def get_res(dir: str):
     """
-    进入 dir 文件夹，读取其中的 csv 文件，并以字典的形式返回
-
-    Args:
-        dir: 目标文件夹的名字
-
-    Return: dict{'number': xx, 'distance': xx}
+    go to dir, read the csv file and return the data
     """
     cur_dir = os.getcwd()
     os.chdir(dir)

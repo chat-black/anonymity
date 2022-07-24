@@ -1,11 +1,11 @@
 # Introduce
 Here is all the source code for the ARENA system.
-* back_end/ is the database and TIPS algorithm source code.
-    * back_end/conf/ is some configuration files that will be used when installing backend.
-    * back_end/data/ is the data used for experiments and tests. Since the IMDB data is too large, we only provide the TPCH data here.
-    * back_end/gp-xerces/ is a dependency library when installing the database.
-    * back_end/gpdb_src/ is the source code of database(GreenPlum) which contains the ORCA optimizer. Also, the algorithms we proposed (eg, TIPS and GFP) have been integrated into the database source code. The codes of these algorithms and experiments mainly involve two files (back_end/gpdb_src/src/backend/gporca/libgpopt/src/engine/CEngine.cpp) and (back_end/gpdb_src/src/backend/gporca/libgpopt/include/gpopt/search/CTreeMap.h). The functions corresponding to each algorithm are as follows:
-        * `ARENA_TIPS` is the wrapper function for **TIPS** algorithm. It will call the **I-TIPS** algorithm (function `FindK_I`) or the **B-TIPS-Heap** algorithm (function `FindK`) as needed. All of them are in *CEngine.cpp*.
+* **back_end/** is the database and TIPS algorithm source code.
+    * **back_end/conf/** is some configuration files that will be used when installing backend.
+    * **back_end/data/** is the data used for experiments and tests. Since the IMDB data is too large, we only provide the TPCH data here.
+    * **back_end/gp-xerces/** is a dependency library when installing the database.
+    * **back_end/gpdb_src/** is the source code of database(GreenPlum) which contains the ORCA optimizer. Also, the algorithms we proposed (e.g. **TIPS** and **GFP**) have been integrated into the database source code. The codes of these algorithms and experiments mainly involve two files (back_end/gpdb_src/src/backend/gporca/libgpopt/src/engine/CEngine.cpp) and (back_end/gpdb_src/src/backend/gporca/libgpopt/include/gpopt/search/CTreeMap.h). The functions corresponding to each algorithm are as follows:
+        * `ARENA_TIPS` is the wrapper function for **TIPS** algorithm. It will call the **I-TIPS** algorithm (function `I_TIPS`) or the **B-TIPS-Heap** algorithm (function `B_TIPS_Heap`) as needed. All of them are in *CEngine.cpp*.
         * `ARENAGFPFilter` implements the **GFP** or **GFP&Cost** filter strategy which is in *CEngine.cpp*. The **Group Forest** is built in *CTreeMap.h*. And the macro `ARENA_COSTFT` defined in *CTreeMap.h* is used to control whether the **GFP** strategy or the **GFP&Cost** strategy is used.
         * `ARENALaps` implemets the **LAPS** strategy and it is in *CEngine.cpp*. For convenience, we currently use the **Group Forest** in the **GFP** strategy to find the plans which have the same structure as QEP. But this is not necessary, we will improve it later.
         * `CEngine::SamplePlans` in *CEngine.cpp* is the function that is used to find all valid alternative plans. 
@@ -16,7 +16,7 @@ Here is all the source code for the ARENA system.
 We experimented and tested on Ubuntu 18.04.6. To ensure problem-free installation and experimentation, we recommend doing it under the same system. The easiest way is to use a virtual machine. In addition, the current front-end js code will request data from the web server at 127.0.0.1, so even if the web server listens to multiple addresses, you can only get data when you access it locally. So, you better install Ubuntu with a GUI.
 
 ## Install Backend
-We have prepared two installation scripts, back_end/install_1.sh and back_end/install_2.sh, so the installation of the backend is very simple.
+We have prepared two installation scripts, **back_end/install_1.sh** and **back_end/install_2.sh**, so the installation of the backend is very simple.
 * Firstly, `bash install_1.sh` and wait a minute. It will install some necssary libraries and compile the source code of the database.
 * Secondly, logout and relogin. This step is necessary. back_end/install_1.sh will modify some default configurations and these modifications will only take effect after relogging.
 * Thirdly, `bash install_2.sh` and wait a minute. It will initialize the database and import the tpch data.

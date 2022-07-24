@@ -462,13 +462,12 @@ void FindKRandom();  // Random
 void FindKCost();  // Cost
 
 // The following functions are used for the experiments in Section 7.2
-void ARENATimeExp3();  // Exp1 in Section 7.2, TIPS algorithm
-void ARENATimeExp3Random();  // Exp1 in Section 7.2, Random
-void ARENATimeExp3Cost();  // Exp1 in Section 7.2, Cost
+void ARENAExp1();  // Exp1 in Section 7.2, TIPS algorithm
+void ARENAExp1Random();  // Exp1 in Section 7.2, Random
+void ARENAExp1Cost();  // Exp1 in Section 7.2, Cost
 
-void ARENATimeExp4();  // Exp2 in Section 7.2, suffix Tree
-void ARENATimeExp4Hash();  // Exp2 in Section 7.2, Hash Table
-void ARENATimeExp4Old();  // Exp2 in Section 7.2, suffix Tree old
+void ARENAExp2Suffix();  // Exp2 in Section 7.2, suffix Tree
+void ARENAExp2Hash();  // Exp2 in Section 7.2, Hash Table
 
 void ARENAGFPExp();  // Exp 4 in Section 7.2
 
@@ -2001,7 +2000,7 @@ void addResult(int id)
  * B-TIPS algorithm
  ************************************************************/ 
 template<class T>
-void FindK(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<MinDist> &dist_record)
+void B_TIPS_Heap(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<MinDist> &dist_record)
 {
 	res.push_back(0);  // the first element is QEP
 	addResult(0);  // send plan
@@ -2184,7 +2183,7 @@ void IAQPOutputRes(int id)
  * through the signal USR1 and it will make the next selection.
  ************************************************************/ 
 template<class T>
-void FindK_I(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<MinDist> &dist_record)
+void I_TIPS(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<MinDist> &dist_record)
 {
 	changeHandler();  // Change the signal handler, 
 
@@ -4695,13 +4694,13 @@ CEngine::SamplePlans()
 		// Adjust the experiments that need to be done
 
 		/* Exp1 */
-		// ARENATimeExp3();
-		// ARENATimeExp3Random();
-		// ARENATimeExp3Cost();
+		// ARENAExp1();
+		// ARENAExp1Random();
+		// ARENAExp1Cost();
 
 		/* Exp2 */
-		// ARENATimeExp4();
-		// ARENATimeExp4Hash();
+		// ARENAExp2Suffix();
+		// ARENAExp2Hash();
 
 		/* Exp3 */
 		// ARENA_TIPS();
@@ -5481,12 +5480,12 @@ void ARENA_TIPS()
 			if (gMode == 'B')
 			{
 				fout_time << "B-TIPS\n";
-				FindK(plan_trees_hash, res, dist_record);  // B-TIPS-Heap
+				B_TIPS_Heap(plan_trees_hash, res, dist_record);  // B-TIPS-Heap
 			}
 			else if (gMode == 'I')
 			{
 				fout_time << "I-TIPS\n";
-				FindK_I(plan_trees_hash, res, dist_record);  // I-TIPS
+				I_TIPS(plan_trees_hash, res, dist_record);  // I-TIPS
 			}
 
 			// output information
@@ -5684,7 +5683,7 @@ void FindKCost()
 }
 
 // test the effectiveness and efficiency of TIPS
-void ARENATimeExp3()
+void ARENAExp1()
 {
 	plan_trees_hash.reserve(plan_buffer.size());
 
@@ -5755,7 +5754,7 @@ void ARENATimeExp3()
 }
 
 // test the effectiveness and efficiency of Random
-void ARENATimeExp3Random()
+void ARENAExp1Random()
 {
 	std::string logFile = getLogFileName();
 	std::ofstream fout_time(logFile);
@@ -5782,7 +5781,7 @@ void ARENATimeExp3Random()
 }
 
 // test the effectiveness and efficiency of Cost
-void ARENATimeExp3Cost()
+void ARENAExp1Cost()
 {
 	std::string logFile = getLogFileName();
 	std::ofstream fout_time(logFile);
@@ -5807,7 +5806,7 @@ void ARENATimeExp3Cost()
 }
 
 // test the time-consuming of suffix tree in different stages
-void ARENATimeExp4()
+void ARENAExp2Suffix()
 {
 	std::vector<PlanTreeExp<CExpression>> plan_trees_exp;
 	plan_trees_exp.reserve(plan_buffer.size());
@@ -5865,7 +5864,7 @@ void ARENATimeExp4()
 }
 
 // test the time-consuming of hash table in different stages
-void ARENATimeExp4Hash()
+void ARENAExp2Hash()
 {
 	plan_trees_hash.reserve(plan_buffer.size());
 

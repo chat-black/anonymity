@@ -12,6 +12,6 @@ This directory contains experimental data and experimental scripts related to Ex
 - **draw.py** is the plotting script used in this experiment. It moves into each subdirectory and calls **draw.py** in that directory.
 
 # Conduct Experiment
-This experiment mainly involves two functions `ARENATimeExp4` and `ARENATimeExp4Hash` in file *ARENA_system/back_end/gpdb_src/src/backend/gporca/libgpopt/src/engine/CEngine.cpp*. The former uses the suffix tree to calculate the subtree kernel and the latter uses the hash table to calculate the subtree kernel.
+This experiment mainly involves two functions `ARENAExp2Suffix` and `ARENAExp2Hash` in file *ARENA_system/back_end/gpdb_src/src/backend/gporca/libgpopt/src/engine/CEngine.cpp*. The former uses the suffix tree to calculate the subtree kernel and the latter uses the hash table to calculate the subtree kernel.
 
-If you want to perform this experiment, you need to choose one of `ARENATimeExp4` and `ARENATimeExp4Hash` to execute, and the other one need to be commented in `CEngine::SamplePlans`. Moreover, in order for **execute.py** to rename the result file correctly, the `move_result` part of the `main` function needs to be commented out as well.
+If you want to perform this experiment, you need to choose one of `ARENAExp2Suffix` and `ARENAExp2Hash` to execute, and the other one need to be commented in `CEngine::SamplePlans`. Moreover, in order for **execute.py** to rename the result file correctly, the `move_result` part of the `main` function needs to be commented out as well.
