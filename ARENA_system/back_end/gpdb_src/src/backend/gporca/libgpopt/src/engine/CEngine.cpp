@@ -151,7 +151,7 @@ std::string ARENASortSTree(const std::string & s)
 }
 
 
-// struct MinDist is used for B-TIPS-HEAP
+// struct MinDist is used for B-TIPS-HEAP. It records plan index and current minimum distance
 struct MinDist {
 	int index;  // plan index
 	std::size_t distNum;
@@ -1089,24 +1089,21 @@ public:
 		return (1-gLambda)*(offset + other.offset) / 2 +gLambda * (s_dist * gSWeight + c_dist * gCWeight + cost * gCostWeight);
 	}
 
-	double distance_with_best(PlanTreeHash &other)
+	// calculate the difference between current plan and QEP and initialize the plan relevance
+	double difference_with_best(PlanTreeHash &qep)
 	{
-		double s_dist = structure_dist(other);
-		double c_dist = editDist(str_of_node, other.str_of_node);
-		double cost = cost_dist(other);
+		double s_dist = structure_dist(qep);  // structure difference
+		double c_dist = editDist(str_of_node, qep.str_of_node);  // content difference
+		double cost = cost_dist(qep);  // cost difference
 
 		s_dist_best = s_dist;
 		c_dist_best = c_dist;
 		cost_dist_best = cost;
 		double a[7]{1.0000,    1.0000,    1.0000,   -1.0000,   -2.0000,   -2.0000,    2.0000};
-		offset = a[0]*s_dist+ a[1]*c_dist+a[2]*cost+a[3]*s_dist*c_dist+a[4]*s_dist*cost+a[5]*c_dist*cost+a[6]*s_dist*c_dist*cost;
-		if(offset < 0.0)
-		{
-			offset = 0.0;
-		}
-
-		return (1-gLambda)*offset +gLambda * (s_dist * gSWeight + c_dist * gCWeight + cost * gCostWeight);
+		offset = a[0]*s_dist+ a[1]*c_dist+a[2]*cost+a[3]*s_dist*c_dist+a[4]*s_dist*cost+a[5]*c_dist*cost+a[6]*s_dist*c_dist*cost;  // offset record the plan relevance
+		return (1-gLambda)*offset +gLambda * (s_dist * gSWeight + c_dist * gCWeight + cost * gCostWeight);  // return the refined distance which contains plan difference and plan relevance
 	}
+
 
 	double structure_dist(PlanTreeHash& other)
 	{
@@ -1197,6 +1194,21 @@ public:
 	{
 		double res = abs(root->data.cost - other.root->data.cost) / max_cost; 
 		return res;
+	}
+
+	// the old name of difference_with_best
+	double distance_with_best(PlanTreeHash &other)
+	{
+		double s_dist = structure_dist(other);
+		double c_dist = editDist(str_of_node, other.str_of_node);
+		double cost = cost_dist(other);
+
+		s_dist_best = s_dist;
+		c_dist_best = c_dist;
+		cost_dist_best = cost;
+		double a[7]{1.0000,    1.0000,    1.0000,   -1.0000,   -2.0000,   -2.0000,    2.0000};
+		offset = a[0]*s_dist+ a[1]*c_dist+a[2]*cost+a[3]*s_dist*c_dist+a[4]*s_dist*cost+a[5]*c_dist*cost+a[6]*s_dist*c_dist*cost;
+		return (1-gLambda)*offset/2 +gLambda * (s_dist * gSWeight + c_dist * gCWeight + cost * gCostWeight);
 	}
 
 	void TED_json()
@@ -1952,10 +1964,10 @@ struct PlanTreeExp  // use the suffix tree to calculate subtree kernel
 ///**************************************************/
 /// some global variables
 ///**************************************************/
-std::queue<CExpression *> plan_buffer;
-std::vector<CExpression *> plan_buffer_for_exp; 
-std::vector<PlanTreeHash<CExpression>> plan_trees_hash;
-std::vector<PlanTreeHash<CExpression>> plan_trees_send;
+std::queue<CExpression *> plan_buffer;  // record the original form of plan
+std::vector<CExpression *> plan_buffer_list;  // it has the same content as plan_buffer but with random access
+std::vector<PlanTreeHash<CExpression>> plan_trees_hash;  // it records the necessary information of the original plan and it is used to calculate plan difference and plan relevance
+std::vector<PlanTreeHash<CExpression>> plan_trees_send;  // used to send the informative plans
 
 
 ///**************************************************/
@@ -1997,7 +2009,7 @@ void addResult(int id)
 
 
 /************************************************************
- * B-TIPS algorithm
+ * B-TIPS-Heap algorithm
  ************************************************************/ 
 template<class T>
 void B_TIPS_Heap(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<MinDist> &dist_record)
@@ -2005,34 +2017,35 @@ void B_TIPS_Heap(std::vector<T>& plans, std::vector<int>& res, std::priority_que
 	res.push_back(0);  // the first element is QEP
 	addResult(0);  // send plan
 
-    // if the total number is smaller than target number
+    // if the total number is smaller than target number, we will send all alternative plans
     if (plans.size() <= gARENAK)
     {
 		for (std::size_t i = 1; i < plans.size(); ++i)
         {
-			if (plans[i].root->data.cost != plans[0].root->data.cost)
-			{
-				res.push_back(i);
-				addResult(i);
-			}
+			res.push_back(i);
+			addResult(i);
         }
     }
     // find k informative plans
     else
 	{
 		std::vector<MinDist> tempRemoved;
-		tempRemoved.reserve(plans.size() / 3);
+		tempRemoved.reserve(plans.size() / 3);  // record plans temporarily removed from the heap
 
 		// iterate gARENAK times, select a valid maximum value each time
         for (std::size_t i = 0; i < gARENAK; ++i)
         {
 			MinDist maxValue;
 			maxValue.dist = -100;
-			while(!dist_record.empty() && dist_record.top() > maxValue) {
-				if (dist_record.top().distNum == i) { // if current value is valid
+			while(!dist_record.empty() && dist_record.top() > maxValue)  // the heap is not empty and the top value is greater the max value that we have found
+			{
+				if (dist_record.top().distNum == i)
+				{ // if current value is valid
 					tempRemoved.push_back(maxValue);
 					maxValue = dist_record.top();
-				} else {
+				}
+				else  // update the refinde distance
+				{
 					MinDist topElement = dist_record.top();
 					for(std::size_t j=topElement.distNum+1; j<=i ; j++) {
 						double dist = plans[topElement.index].distance(plans[res[j]]);
@@ -2177,7 +2190,7 @@ void IAQPOutputRes(int id)
 /************************************************************
  * I-TIPS algorithm
  * 
- * Currently, we also use the Heap to optimize the algorithm.
+ * Currently, we also use the Heap to optimize the I-TIPS algorithm.
  * Each time a plan is selected and sent to the web server then
  * the process sleeps. The web server wakes up the process
  * through the signal USR1 and it will make the next selection.
@@ -2273,9 +2286,9 @@ void I_TIPS(std::vector<T>& plans, std::vector<int>& res, std::priority_queue<Mi
 double ARENACalculateDist(std::vector<int> & res)
 {
 	plan_trees_hash.reserve(res.size());
-	for(std::size_t i=0;i<plan_buffer_for_exp.size();i++)
+	for(std::size_t i=0;i<plan_buffer_list.size();i++)
 	{
-		double temp_cost = plan_buffer_for_exp[i]->Cost().Get();
+		double temp_cost = plan_buffer_list[i]->Cost().Get();
 		if (temp_cost> max_cost)
 		{
 			max_cost = temp_cost;
@@ -2285,7 +2298,7 @@ double ARENACalculateDist(std::vector<int> & res)
 	for (std::size_t i = 0; i < res.size(); i++)
 	{
 		plan_trees_hash.push_back(PlanTreeHash<CExpression>());
-		plan_trees_hash[i].init(plan_buffer_for_exp[res[i]], 0);
+		plan_trees_hash[i].init(plan_buffer_list[res[i]], 0);
 	}
 
 	for(std::size_t i=0;i<plan_trees_hash.size();i++)
@@ -4441,7 +4454,7 @@ CEngine::FValidPlanSample(CEnumeratorConfig *pec, ULLONG plan_id,
 //		CEngine::SamplePlans
 //
 //	@doc:
-//		Sample distribution of possible plans uniformly;
+//		Sample all possible plans uniformly and it can also be used to get all plans
 //
 //---------------------------------------------------------------------------
 void
@@ -4453,7 +4466,8 @@ CEngine::SamplePlans()
 	std::ofstream fout_time("/tmp/time_record");  // record the execution time of different parts
 	std::ofstream fout_plan("/tmp/Plans");  // record some information used to debug
 
-	readConfig();
+	readConfig();  // get configuration information from web server
+
 	// if /tmp/gtArg exists, the parameters about LAPS and GFP will be read from it, used for experiment
 	std::ifstream fin_gt("/tmp/gtArg");
 	if(fin_gt.is_open())
@@ -4495,8 +4509,8 @@ CEngine::SamplePlans()
 	ULLONG ullCount = Pmemotmap()->UllCount();
 
 	//************************ARENA**************************/
-	gIsGTFilter = ullCount >= (ULLONG)gGTNumThreshold;
-	gisSample = gJoin >= gSampleThreshold;
+	gIsGTFilter = ullCount >= (ULLONG)gGTNumThreshold;  // the plan number is greater than GFP threshold
+	gisSample = gJoin >= gSampleThreshold;  // the join number is greater than LAPS threshold
 	if(gisSample)
 	{
 		gIsGTFilter = false;  // if sampling with the LAPS strategy, the GFP algorithm will not be used again
@@ -4521,7 +4535,7 @@ CEngine::SamplePlans()
 	pec->SetBestCost(costBest);
 
 	//************************ARENA**************************/
-	std::vector<std::string>& groupTree = m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTree;
+	std::vector<std::string>& groupTree = m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTree;  // record the information of Group Frost
 	fout_plan << "the number of GroupTree is: " << groupTree.size() << std::endl;
 	std::unordered_map<std::string, std::vector<int>>& groupTreePlus = m_pmemo->Pmemotmap()->ProotNode()->ARENA_groupTreePlus;
 #ifdef ARENA_COSTFT
@@ -4532,7 +4546,7 @@ CEngine::SamplePlans()
 
 	// record the QEP
 	plan_buffer.push(pexpr);
-	plan_buffer_for_exp.push_back(pexpr);
+	plan_buffer_list.push_back(pexpr);
 	{
 		PlanTreeHash<CExpression> tempTree;
 		tempTree.init(pexpr);
@@ -4619,7 +4633,7 @@ CEngine::SamplePlans()
 		if (FValidPlanSample(pec, plan_id, &pexpr))
 		{
 			plan_buffer.push(pexpr);
-			plan_buffer_for_exp.push_back(pexpr);
+			plan_buffer_list.push_back(pexpr);
 			{  // output the plan information
 				PlanTreeHash<CExpression> tempTree;
 				tempTree.init(pexpr);
@@ -4639,7 +4653,7 @@ CEngine::SamplePlans()
 	// if use the LAPS strategy, add the plans selected by LAPS to random plans
 	if(gisSample)
 	{
-		gLapsStart = plan_buffer_for_exp.size();
+		gLapsStart = plan_buffer_list.size();
 		for(auto id: filteredId)
 		{
 			ULLONG plan_id = (ULLONG)id;
@@ -4650,7 +4664,7 @@ CEngine::SamplePlans()
 			if (FValidPlanSample(pec, plan_id, &pexpr))
 			{
 				plan_buffer.push(pexpr);
-				plan_buffer_for_exp.push_back(pexpr);
+				plan_buffer_list.push_back(pexpr);
 				{
 					PlanTreeHash<CExpression> tempTree;
 					tempTree.init(pexpr);
@@ -4691,7 +4705,7 @@ CEngine::SamplePlans()
 	else
 	{
 		fout_time << "experiment\n";
-		// Adjust the experiments that need to be done
+		// adjust the function that will be executed based on the current experiment
 
 		/* Exp1 */
 		// ARENAExp1();
@@ -5310,7 +5324,8 @@ void ARENA_result(std::vector<int> & res)
  * For convenience, we currently implement the LAPS strategy based on the GFP code.
  * that is, we traverse all Group Trees and then select the Group Tree with
  * the same structure as the QEP, and then obtain the plan with the same structure as the QEP.
- * In fact, we can just generate the Group Tree with the same structure as QEP.
+ * In fact, we can just generate the Group Tree with the same structure as QEP and we
+ * will optimize this part later.
  ************************************************************/ 
 void ARENALaps(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep)
 {
@@ -5332,7 +5347,7 @@ void ARENALaps(std::unordered_map<std::string, std::vector<int>> & groupTreePlus
 }
 
 /************************************************************
- * Use GFP or GFP&Cost strategy to filter useless plans
+ * Use GFP or GFP&Cost strategy to filter uninformative plans
  ************************************************************/ 
 void ARENAGFPFilter(std::unordered_map<std::string, std::vector<int>> & groupTreePlus, std::unordered_set<int> & record, PlanTreeHash<CExpression>& qep, std::unordered_map<int, CCost>* id2Cost)
 {
@@ -5372,7 +5387,7 @@ void ARENAGFPFilter(std::unordered_map<std::string, std::vector<int>> & groupTre
 		// while experimenting, gGFPFilterThreshold can be set via the configuration file '/tmp/gtArg', by default we set it to 0.5
 		if(temp > gGFPFilterThreshold)  // if the difference is larger than threshold
 		{
-			for(int tempId: t.inIter->second)  // record the plan ids corresponding to this Group Tree
+			for(int tempId: t.inIter->second)  // record the plan ids corresponding to this Group Tree and they are filtered out
 			{
 #ifdef ARENA_COSTFT  // if the GFP&Cost strategy is enabled, it is also necessary to determine whether the cost difference is greater than the threshold
 				temp = id2Cost->at(tempId).Get();
@@ -5426,7 +5441,7 @@ void ARENA_TIPS()
 	}
 	else if(gMode == 'I')  // I-TIPS mode
 	{
-		plan_trees_send.resize(plan_buffer_for_exp.size());
+		plan_trees_send.resize(plan_buffer_list.size());
 	}
 
 	if (gARENAK == 0)  // select 0 informative plans, i.e. only show QEP
@@ -5438,7 +5453,7 @@ void ARENA_TIPS()
 	}
 	else  // Normally, select multiple infomative plans
 	{
-		plan_trees_hash.reserve(plan_buffer.size());  // allocate memory ahead of time to speed up
+		plan_trees_hash.reserve(plan_buffer.size());  // allocate memory in advance to speed up
 		std::string logFile = getLogFileName();  // get the filename for outputting execution information, which is usually '/home/USERNAME/timeReocrd.txt'
 		std::ofstream fout_time(logFile);
         if (fout_time.is_open())
@@ -5447,10 +5462,10 @@ void ARENA_TIPS()
             auto start = std::chrono::steady_clock::now();  // used to record execution time
 
 			// initialize data structures for calculating plan difference and plan relevance
-			for(std::size_t i=0;i<plan_buffer_for_exp.size();++i)
+			for(std::size_t i=0;i<plan_buffer_list.size();++i)
 			{
 				plan_trees_hash.push_back(PlanTreeHash<CExpression>());
-				plan_trees_hash[i].init(plan_buffer_for_exp[i]);
+				plan_trees_hash[i].init(plan_buffer_list[i]);
 
 				// find the max cost which is used to normalize cost difference
 				if (plan_trees_hash[i].get_cost() > max_cost)
@@ -5467,7 +5482,7 @@ void ARENA_TIPS()
                 double temp_dist;
 				for (std::size_t i = 1; i < plan_trees_hash.size(); ++i)
 				{
-					temp_dist = plan_trees_hash[i].distance_with_best(plan_trees_hash[0]);
+					temp_dist = plan_trees_hash[i].difference_with_best(plan_trees_hash[0]);
 					MinDist temp;
 					temp.index = i;  // plan id
 					temp.dist = temp_dist;  // plan distance
@@ -5476,7 +5491,7 @@ void ARENA_TIPS()
             }
 
 			// invoke B-TIPS or I-TIPS
-			std::vector<int> res;  // record the ids of the selected plans
+			std::vector<int> res;  // record the index of the selected plans
 			if (gMode == 'B')
 			{
 				fout_time << "B-TIPS\n";
@@ -5489,7 +5504,7 @@ void ARENA_TIPS()
 			}
 
 			// output information
-            ARENA_result(res);  // output the selected plan information to a file
+            ARENA_result(res);  // output the selected plan information to a file and this is used for Exp3.
             fout_time << "total time(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
             fout_time.close();
         }
@@ -5531,10 +5546,10 @@ void FindKRandom()
 		plan_trees_hash.reserve(plan_buffer.size());
 
 		// initialize data structures for calculating plan difference and plan relevance
-		for(std::size_t i=0;i<plan_buffer_for_exp.size();++i)
+		for(std::size_t i=0;i<plan_buffer_list.size();++i)
 		{
 			plan_trees_hash.push_back(PlanTreeHash<CExpression>());
-			plan_trees_hash[i].init(plan_buffer_for_exp[i]);
+			plan_trees_hash[i].init(plan_buffer_list[i]);
 
 			if (plan_trees_hash[i].get_cost() > max_cost)
 			{
@@ -5634,10 +5649,10 @@ void FindKCost()
 		plan_trees_hash.reserve(plan_buffer.size());
 
 		// initialize data structures for calculating plan difference and plan relevance
-		for(std::size_t i=0;i<plan_buffer_for_exp.size();++i)
+		for(std::size_t i=0;i<plan_buffer_list.size();++i)
 		{
 			plan_trees_hash.push_back(PlanTreeHash<CExpression>());
-			plan_trees_hash[i].init(plan_buffer_for_exp[i]);
+			plan_trees_hash[i].init(plan_buffer_list[i]);
 
 			// find the max cost which is used to normalize cost difference
 			if (plan_trees_hash[i].get_cost() > max_cost)
@@ -5695,10 +5710,10 @@ void ARENAExp1()
 		{
 			fout_time << "\n*the number of informative plans is: " << tempPlanNum << '\n';
 			auto start = std::chrono::steady_clock::now();  // record time
-			for (std::size_t i = 0; i < plan_buffer_for_exp.size(); i++)
+			for (std::size_t i = 0; i < plan_buffer_list.size(); i++)
 			{
 				plan_trees_hash.push_back(PlanTreeHash<CExpression>());
-				plan_trees_hash[i].init(plan_buffer_for_exp[i], 0);
+				plan_trees_hash[i].init(plan_buffer_list[i], 0);
 				plan_trees_hash[i].init(NULL, 1);
 				plan_trees_hash[i].init(NULL, 2);
 				plan_trees_hash[i].init(NULL, 3);
@@ -5767,7 +5782,7 @@ void ARENAExp1Random()
 			fout_time << "\n*the number of informative plan is: " << tempPlanNum << '\n';
 			auto start = std::chrono::steady_clock::now();
 			fout_time << std::setiosflags(std::ios::fixed)<<std::setprecision(3);
-			double min_dist = FindKRandomExp(plan_buffer_for_exp, res, tempPlanNum);
+			double min_dist = FindKRandomExp(plan_buffer_list, res, tempPlanNum);
 			fout_time << "*plan interestingness: " << min_dist << '\n';
 			fout_time << "*total time(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
 
@@ -5792,7 +5807,7 @@ void ARENAExp1Cost()
 		{
 			fout_time << "\n*the number of informative plan is: " << tempPlanNum << '\n';
 			auto start = std::chrono::steady_clock::now();
-			FindKCostExp(plan_buffer_for_exp, res, tempPlanNum);
+			FindKCostExp(plan_buffer_list, res, tempPlanNum);
 			fout_time << std::setiosflags(std::ios::fixed)<<std::setprecision(3);
 			fout_time << "*plan interestingness: " << ARENACalculateDist(res) << '\n';
 			fout_time << "*total time(ms): " << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)).count() << std::endl;
@@ -5823,7 +5838,7 @@ void ARENAExp2Suffix()
 			for (std::size_t i = 0; i < tempPlanNum; i++)
 			{
 				plan_trees_exp.push_back(PlanTreeExp<CExpression>());
-				plan_trees_exp[i].init(plan_buffer_for_exp[i], 0);
+				plan_trees_exp[i].init(plan_buffer_list[i], 0);
 
 				// find the max cost
 				if (plan_trees_exp[i].root->data.cost > max_cost)
@@ -5880,7 +5895,7 @@ void ARENAExp2Hash()
 			for (std::size_t i = 0; i < tempPlanNum; i++)
 			{
 				plan_trees_hash.push_back(PlanTreeHash<CExpression>());
-				plan_trees_hash[i].init(plan_buffer_for_exp[i], 0);
+				plan_trees_hash[i].init(plan_buffer_list[i], 0);
 
 				if (plan_trees_hash[i].root->data.cost > max_cost)
 				{
@@ -5933,10 +5948,10 @@ void ARENAGFPExp()
 		auto start = std::chrono::steady_clock::now();
 
 		// initialize data structures for calculating plan difference and plan relevance
-		for (std::size_t i = 0; i < plan_buffer_for_exp.size(); i++)
+		for (std::size_t i = 0; i < plan_buffer_list.size(); i++)
 		{
 			plan_trees_hash.emplace_back(PlanTreeHash<CExpression>());
-			plan_trees_hash[i].init(plan_buffer_for_exp[i]);
+			plan_trees_hash[i].init(plan_buffer_list[i]);
 
 			// find the max cost which is used to normalize cost difference
 			if (plan_trees_hash[i].root->data.cost > max_cost)
@@ -6005,13 +6020,13 @@ void ARENALAPSExp()
 				fout_time << "\nLAPS strategy:\n";
 			}
 
-			std::size_t plan_num = turn == 1 ? gLapsStart : plan_buffer_for_exp.size();
+			std::size_t plan_num = turn == 1 ? gLapsStart : plan_buffer_list.size();
 			std::unordered_set<ULLONG> removed_plan;  // record the removed plans
 			if(turn == 2)  // for LAPS strategy, randomly remove n plans where n is the number of plans selected by LAPS strategy.
 			{
 				std::default_random_engine e(time(NULL));
 				std::uniform_int_distribution<ULLONG> u(0, gLapsStart);
-				while(removed_plan.size() < plan_buffer_for_exp.size()-gLapsStart)
+				while(removed_plan.size() < plan_buffer_list.size()-gLapsStart)
 				{
 					ULLONG plan_id = u(e);
 					removed_plan.insert(plan_id);
@@ -6024,7 +6039,7 @@ void ARENALAPSExp()
 					continue;
 
 				plan_trees_hash.emplace_back(PlanTreeHash<CExpression>());
-				plan_trees_hash[j].init(plan_buffer_for_exp[i]);
+				plan_trees_hash[j].init(plan_buffer_list[i]);
 				j++;
 
 				// find the max cost
