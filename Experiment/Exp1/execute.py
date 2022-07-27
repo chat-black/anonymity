@@ -32,7 +32,7 @@ def run_sql(db_name, sql):
 def move_result(target_dir, target_name, change_fun=None):
     pre_dir = os.getcwd()
     os.makedirs(target_dir, exist_ok=True)
-    shutil.copy('/home/{}/timeRecord.txt'.format(os.login()), target_dir+'/'+target_name)
+    shutil.copy('/home/{}/timeRecord.txt'.format(os.getlogin()), target_dir+'/'+target_name)
     os.chdir(target_dir)
     if change_fun is not None:
         change_fun(target_name)

@@ -487,7 +487,7 @@ double gLambda = 0.5;  // trade-off between difference and relevance
 char gMode = 'B';  // B-TIPS or I-TIPS
 std::size_t gARENAK = 5;  // display 5 informative plans defaultly
 bool gIsGTFilter = false;  // Whether to use the GFP filtering algorithm
-int gGTNumThreshold = 50000;  // GFP threshold
+int gGTNumThreshold = 100000;  // GFP threshold
 double gGFPFilterThreshold = 0.5;  // the plan whose difference is larger than this value will be filtered out.
 ULLONG gSampleThreshold = 10;  // LAPS threshold
 ULLONG gSampleNumber = 1000;  // number of samples
@@ -5832,6 +5832,10 @@ void ARENAExp2Suffix()
 	{
 		for (std::size_t tempPlanNum = 1000; tempPlanNum < 11000; tempPlanNum += 1000)
 		{
+			if(tempPlanNum > plan_buffer_list.size())
+			{
+				break;
+			}
 			fout_time << "\n*the number of informative plans: " << tempPlanNum << '\n';
 			auto start = std::chrono::steady_clock::now();
 			// construct the plan tree
@@ -5889,6 +5893,10 @@ void ARENAExp2Hash()
 	{
 		for (std::size_t tempPlanNum = 1000; tempPlanNum < 11000; tempPlanNum += 1000)
 		{
+			if(tempPlanNum > plan_buffer_list.size())
+			{
+				break;
+			}
 			fout_time << "\n*the number of informative plans: " << tempPlanNum << '\n';
 			auto start = std::chrono::steady_clock::now();
 			// construct the plan tree
@@ -6040,13 +6048,13 @@ void ARENALAPSExp()
 
 				plan_trees_hash.emplace_back(PlanTreeHash<CExpression>());
 				plan_trees_hash[j].init(plan_buffer_list[i]);
-				j++;
-
 				// find the max cost
-				if (plan_trees_hash[i].root->data.cost > max_cost)
+				if (plan_trees_hash[j].root->data.cost > max_cost)
 				{
-					max_cost = plan_trees_hash[i].root->data.cost;
+					max_cost = plan_trees_hash[j].root->data.cost;
 				}
+
+				j++;
 			}
 			// get the max cost from file
 			std::ifstream fout_temp("/tmp/LapsCost");
