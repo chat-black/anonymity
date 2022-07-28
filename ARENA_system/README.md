@@ -29,3 +29,9 @@ The web server is written in Python3.6 and the html page has been placed in the 
 * front_end/requirements.txt listed all necessary Python libraries.
 * `bash front_end/run.sh` to make the web server run. 
 * front_end/config.json is a configuration file that controls which database the web server accesses and what username to use.
+
+## Run
+After successfully installing the backend and frontend, you can run the ARENA system.
+* First, make sure the database is running. If you are not sure if it is running, just execute `restartGP.sh` to restart.
+* Then go to the **front_end/** directory and execute `bash run.sh` to start the web server.
+* Finally you can access the ARENA system by visiting 127.0.0.1:5000 through your browser. 
